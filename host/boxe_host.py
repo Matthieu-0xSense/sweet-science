@@ -9,6 +9,12 @@ Usage:
   python boxe_host.py --sim              # no hardware needed
   python boxe_host.py --ble              # scan + connect BOXE-L / BOXE-R
   python boxe_host.py --sim --no-log     # panel only, no file
+  python boxe_host.py --ble --raw        # + raw 1 kHz capture for sweep.py
+
+A reconnect starts a new raw capture file: the node's microsecond clock is the
+only timebase in the stream and it does not survive the gap, so splicing two
+sides of a dropout into one file would fabricate continuity that was not
+there.
 
 Requires: pip install -r requirements.txt (websockets; bleak for --ble)
 """
@@ -31,7 +37,10 @@ LOG_DIR = Path(__file__).parent.parent / "logs"
 SERVICE_UUID = "6f8e0001-b5a3-4f39-b0c4-2ae94a2c5e01"
 CHAR_IMU = "6f8e0002-b5a3-4f39-b0c4-2ae94a2c5e01"
 CHAR_EVENT = "6f8e0003-b5a3-4f39-b0c4-2ae94a2c5e01"
+CHAR_RAW = "6f8e0004-b5a3-4f39-b0c4-2ae94a2c5e01"
 CHAR_STATUS = "6f8e0005-b5a3-4f39-b0c4-2ae94a2c5e01"
+
+RAW_BATCH = 20  # must match RAW_BATCH in firmware/src/boxe.h
 
 ADXL375_G_PER_LSB = 0.049  # 49 mg/LSB
 
@@ -224,7 +233,64 @@ def parse_status(data: bytes, node: str):
     }
 
 
-async def ble_node(hub: Hub, name: str, node: str):
+class RawCapture:
+    """Writes one node's raw 1 kHz stream to logs/raw_<node>_<time>.bin.
+
+    Subscribing to the characteristic is what starts the node capturing, so
+    the file is created up front and the node is told last: the first packet
+    arrives within a connection interval of the subscribe.
+    """
+
+    def __init__(self, hub: Hub, node: str):
+        import rawlog
+
+        LOG_DIR.mkdir(exist_ok=True)
+        name = time.strftime(f"raw_{node}_%Y%m%d_%H%M%S.bin")
+        self.hub = hub
+        self.node = node
+        self.writer = rawlog.RawWriter(LOG_DIR / name, node, time.time(),
+                                       batch=RAW_BATCH)
+        self.short = 0
+        self.gaps = 0
+        self.queue_lost = 0
+        self.prev_seq = None
+        self.last_report = time.time()
+        hub.log("info", f"raw capture -> logs/{name}")
+
+    def on_packet(self, data: bytes):
+        now = time.time()
+        if not self.writer.append(now, data):
+            self.short += 1
+            if self.short == 1:
+                self.hub.log("warn", f"{self.node}: raw packet is "
+                                     f"{len(data)} B, expected "
+                                     f"{self.writer.packet_size} — RAW_BATCH "
+                                     f"mismatch between host and firmware?")
+            return
+
+        seq, lost = struct.unpack_from("<HH", data, 4)
+        self.queue_lost += lost
+        if self.prev_seq is not None and (seq - self.prev_seq) & 0xFFFF != 1:
+            self.gaps += 1
+        self.prev_seq = seq
+
+        if now - self.last_report >= 5.0:
+            self.last_report = now
+            self.writer.flush()
+            kb = self.writer.bytes / 1024
+            self.hub.log("info",
+                         f"{self.node}: raw {self.writer.packets} packets, "
+                         f"{kb:.0f} kB, {self.queue_lost} queue-dropped, "
+                         f"{self.gaps} radio gaps")
+
+    def close(self):
+        self.writer.close()
+        self.hub.log("info", f"{self.node}: raw capture closed, "
+                             f"{self.writer.packets} packets, "
+                             f"{self.queue_lost + self.gaps} lost")
+
+
+async def ble_node(hub: Hub, name: str, node: str, raw: bool = False):
     """Connect one node, resubscribe forever."""
     from bleak import BleakClient, BleakScanner
 
@@ -234,6 +300,7 @@ async def ble_node(hub: Hub, name: str, node: str):
         if dev is None:
             await asyncio.sleep(3)
             continue
+        capture = None
         try:
             async with BleakClient(dev) as client:
                 hub.log("info", f"{name} connected")
@@ -252,10 +319,24 @@ async def ble_node(hub: Hub, name: str, node: str):
                 await client.start_notify(CHAR_IMU, on_imu)
                 await client.start_notify(CHAR_EVENT, on_event)
                 await client.start_notify(CHAR_STATUS, on_status)
+
+                if raw:
+                    capture = RawCapture(hub, node)
+
+                    def on_raw(_, data):
+                        capture.on_packet(bytes(data))
+
+                    # subscribing is the enable — the node starts sampling
+                    # into its queue the moment this returns
+                    await client.start_notify(CHAR_RAW, on_raw)
+
                 while client.is_connected:
                     await asyncio.sleep(1)
         except Exception as e:
             hub.log("warn", f"{name}: {e}")
+        finally:
+            if capture is not None:
+                capture.close()
         hub.log("warn", f"{name} disconnected, retrying")
         await asyncio.sleep(2)
 
@@ -268,14 +349,22 @@ async def main():
     src.add_argument("--sim", action="store_true", help="simulated nodes")
     src.add_argument("--ble", action="store_true", help="real BLE nodes")
     ap.add_argument("--no-log", action="store_true", help="disable JSONL log")
+    ap.add_argument("--raw", action="store_true",
+                    help="also capture the raw 1 kHz stream to "
+                         "logs/raw_<node>_*.bin (for sweep.py). BLE only; "
+                         "adds ~10 kB/s per node")
     args = ap.parse_args()
+
+    if args.raw and args.sim:
+        ap.error("--raw needs real nodes: the simulator has no 1 kHz stream")
 
     hub = Hub(log_enabled=not args.no_log)
     tasks = [ws_server(hub)]
     if args.sim:
         tasks += [sim_node(hub, "L"), sim_node(hub, "R")]
     else:
-        tasks += [ble_node(hub, "BOXE-L", "L"), ble_node(hub, "BOXE-R", "R")]
+        tasks += [ble_node(hub, "BOXE-L", "L", args.raw),
+                  ble_node(hub, "BOXE-R", "R", args.raw)]
     await asyncio.gather(*tasks)
 
 

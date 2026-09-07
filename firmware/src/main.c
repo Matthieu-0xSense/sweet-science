@@ -39,6 +39,8 @@ static const struct adc_dt_spec vbat =
 
 static struct imu_packet stream_pkt;
 static uint8_t stream_fill;
+static struct raw_packet raw_pkt;
+static uint8_t raw_fill;
 static uint32_t tick_count, dropped, event_count;
 /* peak-hold for the FSR channels across one decimation window */
 static uint16_t fsr0_hold, fsr1_hold;
@@ -81,6 +83,26 @@ static void sample_fn(struct k_work *work)
 	(void)adxl375_read(&hgx, &hgy, &hgz);
 
 	punch_detect_feed(t_us, raw0, raw1, hgx, hgy, hgz);
+
+	/* --- raw capture (only while a host is subscribed) ----------- */
+	if (ble_raw_enabled()) {
+		if (raw_fill == 0) {
+			raw_pkt.t_us_base = t_us;
+		}
+		struct raw_sample *r = &raw_pkt.s[raw_fill];
+
+		r->hgx = hgx; r->hgy = hgy; r->hgz = hgz;
+		r->f0 = raw0; r->f1 = raw1;
+
+		if (++raw_fill == RAW_BATCH) {
+			raw_fill = 0;
+			ble_raw_submit(&raw_pkt);
+		}
+	} else if (raw_fill) {
+		/* capture stopped mid-packet: drop the partial batch rather
+		 * than emit it later against a stale timebase */
+		raw_fill = 0;
+	}
 
 	struct event_packet ev;
 

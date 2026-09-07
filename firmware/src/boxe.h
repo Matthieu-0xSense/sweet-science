@@ -9,6 +9,7 @@
 #define SAMPLE_HZ        1000       /* FSR SAADC loop */
 #define IMU_DECIM        10         /* 1 kHz -> 100 Hz stream view */
 #define STREAM_BATCH     5          /* samples per BLE imu packet */
+#define RAW_BATCH        20         /* samples per raw packet = 20 ms */
 
 /* punch detection thresholds — tune during calibration */
 #define PUNCH_HG_START_LSB   102    /* ~5 g on ADXL375 (49 mg/LSB) */
@@ -44,6 +45,32 @@ struct __packed event_packet {
 	uint16_t retract_ms10;      /* return phase x10 (contact end -> quiet) */
 };
 
+/*
+ * Raw capture: the undecimated 1 kHz view the detector actually consumes,
+ * with no thresholding applied. Only what the punch detector reads is
+ * carried — high-g axes and both FSR channels — so a threshold sweep can be
+ * replayed offline against the exact input the state machine saw.
+ *
+ * The gyro and the low-g accel are deliberately absent: they are not detector
+ * inputs, they would nearly triple the bandwidth, and the 100 Hz stream still
+ * carries them alongside a raw capture.
+ *
+ * Sample timestamps are implicit: sample i is t_us_base + i * (1e6/SAMPLE_HZ).
+ * `lost` counts packets the queue could not take since the last one that got
+ * through, so a gap is visible in the capture instead of silently closing up.
+ */
+struct __packed raw_sample {
+	int16_t hgx, hgy, hgz;      /* ADXL375 raw LSB, 49 mg/LSB */
+	uint16_t f0, f1;            /* FSR ADC counts, no peak-hold, no filter */
+};
+
+struct __packed raw_packet {
+	uint32_t t_us_base;
+	uint16_t seq;               /* packet counter, wraps */
+	uint16_t lost;              /* packets dropped since the previous one */
+	struct raw_sample s[RAW_BATCH];
+};
+
 struct __packed status_packet {
 	uint32_t uptime_s;
 	uint16_t batt_mv;
@@ -70,5 +97,13 @@ int  ble_service_init(const char *name);
 void ble_notify_imu(const struct imu_packet *pkt);
 void ble_notify_event(const struct event_packet *pkt);
 void ble_notify_status(const struct status_packet *pkt);
+
+/* Raw capture. Enabled by the host subscribing to the raw characteristic;
+ * there is no separate control write and therefore no mode to get stuck in —
+ * a dropped connection clears the CCC and capture stops on its own.
+ * ble_raw_submit() fills seq/lost and hands the packet to the tx thread; it
+ * never blocks, so it is safe to call from the 1 kHz sample path. */
+bool ble_raw_enabled(void);
+void ble_raw_submit(struct raw_packet *pkt);
 
 #endif /* BOXE_H */

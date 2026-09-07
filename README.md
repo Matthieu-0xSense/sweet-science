@@ -53,6 +53,9 @@ nodes: 597 k IMU samples, 6 k status packets, 806 events, no drops.
 - Python hub to JSONL + WebSocket; browser panel with live synced charts,
   zoom/pan, event table, node health; JSONL replay at 10x
 - `metrics.py`: per-round, per-hand session report
+- raw 1 kHz capture over BLE plus the offline threshold-fitting toolchain
+  (`rawlog.py`, `punch_detect.py`, `sweep.py`, `mark.py`) — verified against a
+  synthetic capture, not yet run on a recording from the bag
 - simulator mode, so the whole host and panel stack runs with no hardware
 
 **Not trustworthy yet.**
@@ -72,17 +75,18 @@ nodes: 597 k IMU samples, 6 k status packets, 806 events, no drops.
 
 Roughly in the order it blocks the next thing.
 
-1. **Threshold fitting.** Record labelled bag work, sweep start/contact
-   thresholds and `PUNCH_WINDOW_MS` offline against the raw stream, push the
-   result into `boxe.h`. Until this lands the event stream is noise.
+1. **Threshold fitting.** The tooling is in place (see below); the recording
+   and the fit are not done. Until this lands the event stream is noise.
 2. **Run the FSR calibration** on both nodes, in-glove, and check the fit
    holds at hand temperature (0.36 %/degC drift).
 3. **Ground-truth validation.** One session, hand-counted and filmed, against
    `metrics.py` output. Anything that disagrees is a bug or a bad metric.
-4. **Raw-window characteristic.** `protocol.md` specs UUID `0004`, the chunked
-   raw buffer around an event. Not implemented in `ble_service.c`. Threshold
-   fitting wants it; today the only full-rate view is what the event packet
-   summarises.
+4. **Fix the baseline latch** in `punch_detect.c` — it only tracks the FSR
+   baseline in `IDLE`, so a resting glove preload above `PUNCH_FSR_CONTACT`
+   latches contact on, which stops the state machine returning to `IDLE`,
+   which stops the baseline tracking. Self-sustaining, and it fails exactly
+   when the sensor goes into a glove. `sweep.py` can score the fix
+   (`--baseline-mode always`) against real data before anyone edits the C.
 5. **Hand strap.** Left/right identity is a build flag (`CONFIG_BOXE_HAND_R`),
    so the two nodes carry different images. A GPIO strap read at boot would
    make them interchangeable.
@@ -99,11 +103,18 @@ Roughly in the order it blocks the next thing.
 ## Layout
 
 ```
-protocol.md    wire formats: BLE GATT packets + host JSONL/WS schema
-host/          Python hub — BLE (bleak) or simulator -> JSONL log + WebSocket
-web/           debug panel — pure front end, no build step (uPlot vendored)
-firmware/      Zephyr app for the Feather nRF52840 Sense nodes
-logs/          session_*.jsonl (created at runtime, not tracked)
+protocol.md         wire formats: BLE GATT packets, JSONL/WS, raw captures
+host/
+  boxe_host.py      hub — BLE (bleak) or simulator -> JSONL + WebSocket
+  metrics.py        session -> per-round, per-hand report
+  calibrate_fsr.py  FSR -> newtons, writes fsr_calib.json
+  rawlog.py         raw capture container: read, stats, JSONL export
+  punch_detect.py   port of punch_detect.c, thresholds exposed
+  sweep.py          fit the thresholds offline against a capture
+  mark.py           hand-label punches while recording
+web/                debug panel — pure front end, no build step (uPlot vendored)
+firmware/           Zephyr app for the Feather nRF52840 Sense nodes
+logs/               created at runtime, not tracked
 ```
 
 Hardware: 2x Adafruit Feather nRF52840 Sense, 2x ADXL375 (+/-200 g), 4x
@@ -134,6 +145,42 @@ the same instant.
 
 **Replay**: pick any past `.jsonl` in the "replay" file input — replays at 10x
 into the same panel.
+
+## Threshold fitting
+
+The detection constants in `firmware/src/boxe.h` were guessed and never
+fitted. Changing one on the board costs a rebuild, a reflash of two nodes and
+a fresh set of punches, so no two candidates are ever scored on the same data.
+The fix is to record the full-rate stream once and sweep offline.
+
+```
+python boxe_host.py --ble --raw     # writes logs/raw_L_*.bin, raw_R_*.bin
+python mark.py                      # someone else presses Enter per punch
+python sweep.py ../logs/raw_L_*.bin --labels ../logs/labels_*.txt
+```
+
+`sweep.py` prints a ranked table and a `#define` block to paste into
+`boxe.h`. Then reflash and re-record to confirm.
+
+- **`--raw` streams the undecimated 1 kHz view** of exactly what the detector
+  consumes — high-g axes and both FSR channels, no thresholding — over GATT
+  characteristic `0004`. Subscribing is what enables it, so there is no mode
+  to get stuck in. ~10.4 kB/s per node, on top of the usual 100 Hz stream.
+- **Capture continuously, not per event.** An event-triggered window can only
+  ever record punches the current threshold already caught, so the false
+  negatives — the thing the start threshold decides — stay invisible. That
+  bias is why `0004` streams rather than dumping a buffer around each event.
+- **`sweep.py` scores against ground truth**, F1 against a label file (best)
+  or absolute count error against `--truth N`. With neither it falls back to a
+  weak plausibility heuristic, which shortlists but does not fit.
+- **`punch_detect.py` is a deliberate line-by-line port** of
+  `punch_detect.c`, down to uint32 timestamp wrapping, C truncating division
+  and the sqrt-free magnitude approximation. If it drifts from the C, the
+  fitted numbers describe a detector that does not exist. Change one, change
+  the other.
+- `rawlog.py stats <capture>` reports packet loss — a sweep fitted on a
+  capture with holes in it fits the holes. `rawlog.py jsonl <capture>`
+  converts to panel format at 100 Hz to eyeball a recording.
 
 ## Session analytics
 
