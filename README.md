@@ -166,6 +166,11 @@ python sweep.py ../logs/raw_L_*.bin --labels ../logs/labels_*.txt
   consumes — high-g axes and both FSR channels, no thresholding — over GATT
   characteristic `0004`. Subscribing is what enables it, so there is no mode
   to get stuck in. ~10.4 kB/s per node, on top of the usual 100 Hz stream.
+  Measured on both nodes at once: 1602 packets each over 32 s, zero loss.
+- **The loop runs at 993.9 Hz, not 1000.** `K_USEC(1000)` against the 32768 Hz
+  tick rounds 32.768 up to 33 ticks, so a sample is 1007 µs. Timestamps are
+  self-consistent, so fitting is unaffected — `metrics.py` rates carry the
+  0.7 % bias until the timer is fixed.
 - **Capture continuously, not per event.** An event-triggered window can only
   ever record punches the current threshold already caught, so the false
   negatives — the thing the start threshold decides — stay invisible. That

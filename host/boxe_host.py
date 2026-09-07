@@ -390,10 +390,10 @@ async def main():
     ap.add_argument("--raw", nargs="?", const="both", choices=("L", "R", "both"),
                     help="capture the raw 1 kHz stream to "
                          "logs/raw_<node>_*.bin (for sweep.py). BLE only; "
-                         "~10 kB/s per node. Give a hand (--raw R) to capture "
-                         "one node: two concurrent streams is more than most "
-                         "adapters schedule evenly, and the loser drops "
-                         "packets")
+                         "~10 kB/s per node. Both nodes at once is fine with "
+                         "the 32-deep node queue (measured: zero loss on both "
+                         "links). Give a hand (--raw R) to halve the radio "
+                         "load if an adapter still struggles")
     args = ap.parse_args()
 
     if args.raw and args.sim:
