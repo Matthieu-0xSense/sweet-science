@@ -215,6 +215,15 @@ def stats(path: Path) -> dict:
         "loss_pct": round(100 * (expected - n_pkt) / expected, 3) if expected else 0.0,
         "peak_g": round(hg_peak, 1),
         "max_fsr_counts": f_max,
+        # A capture whose high-g never moves is not a quiet session: the
+        # ADXL375 powers up in standby and streams zeros, which on the wire is
+        # indistinguishable from a node nobody is wearing. One 37 s recording
+        # was taken that way before the firmware learned to check. High-g is
+        # the punch detector's start trigger, so such a capture cannot be
+        # fitted at all.
+        "warning": ("high-g is all zeros - sensor was in standby, "
+                    "this capture cannot be fitted" if hg_peak == 0.0
+                    else None),
     }
 
 

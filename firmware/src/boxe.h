@@ -82,6 +82,10 @@ struct __packed status_packet {
 /* adxl375.c — high-g impact accelerometer, raw LSB out */
 int adxl375_init(void);
 int adxl375_read(int16_t *x, int16_t *y, int16_t *z);
+/* Liveness: the part streams zeros in standby, which is indistinguishable
+ * from a still glove. Checked at 1 Hz; re-initialises if found asleep. */
+int adxl375_health(bool *measuring);
+uint32_t adxl375_recoveries(void);
 
 /* lsm6ds33.c — on-board accel/gyro, mg and dps x10 out */
 int lsm6ds33_init(void);

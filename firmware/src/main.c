@@ -45,6 +45,7 @@ static uint32_t tick_count, dropped, event_count;
 /* peak-hold for the FSR channels across one decimation window */
 static uint16_t fsr0_hold, fsr1_hold;
 static uint32_t ticks_this_second, measured_hz;
+static uint32_t hg_down_s;      /* seconds the ADXL375 was not measuring */
 
 static uint16_t adc_read_raw(const struct adc_dt_spec *spec)
 {
@@ -176,6 +177,16 @@ static void status_fn(struct k_work *work)
 	measured_hz = ticks_this_second;
 	ticks_this_second = 0;
 
+	/* The high-g part is the punch detector's start trigger. If it drops
+	 * into standby the node keeps streaming a plausible-looking stream of
+	 * zeros and detects nothing at all, so check it every second. */
+	bool measuring = false;
+
+	(void)adxl375_health(&measuring);
+	if (!measuring) {
+		hg_down_s++;
+	}
+
 	struct status_packet st = {
 		.uptime_s = k_uptime_get() / 1000,
 		.batt_mv = (uint16_t)(mv * 2),
@@ -206,7 +217,10 @@ int main(void)
 	(void)adc_channel_setup_dt(&fsr1);
 	(void)adc_channel_setup_dt(&vbat);
 
-	(void)adxl375_init();
+	if (adxl375_init() != 0) {
+		LOG_ERR("adxl375 init failed — high-g is the punch start "
+			"trigger, so detection will not work until it does");
+	}
 	(void)lsm6ds33_init();
 
 	int err = ble_service_init(NODE_NAME);
@@ -274,3 +288,54 @@ static int cmd_fsr(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 SHELL_CMD_REGISTER(fsr, NULL, "Print raw FSR ADC counts: fsr [samples]", cmd_fsr);
+
+/*
+ * `hg` shell command: is the high-g part actually measuring, and what does it
+ * read. Standby streams zeros, which on the wire is indistinguishable from a
+ * perfectly still node — a whole session was recorded that way before this
+ * existed. Check it before strapping the nodes on.
+ */
+static int cmd_hg(const struct shell *sh, size_t argc, char **argv)
+{
+	uint32_t n = 10;
+
+	if (argc > 1) {
+		n = strtoul(argv[1], NULL, 0);
+		if (n == 0 || n > 1000) {
+			shell_error(sh, "count must be 1..1000");
+			return -EINVAL;
+		}
+	}
+
+	bool measuring = false;
+	int err = adxl375_health(&measuring);
+
+	shell_print(sh, "measuring : %s%s", measuring ? "yes" : "NO",
+		    err ? " (i2c error)" : "");
+	shell_print(sh, "recoveries: %u", adxl375_recoveries());
+	shell_print(sh, "seconds down: %u", hg_down_s);
+	if (!measuring) {
+		shell_warn(sh, "high-g is the punch start trigger — "
+			       "detection does nothing while it reads zero");
+	}
+
+	shell_print(sh, "    x      y      z       g");
+	for (uint32_t i = 0; i < n; i++) {
+		int16_t x = 0, y = 0, z = 0;
+
+		if (adxl375_read(&x, &y, &z) != 0) {
+			shell_error(sh, "read failed");
+			return 0;
+		}
+		/* 49 mg/LSB; printed x100 to stay in integers */
+		uint32_t mag = (uint32_t)((abs(x) > abs(y) ? abs(x) : abs(y)));
+
+		mag = mag > (uint32_t)abs(z) ? mag : (uint32_t)abs(z);
+		shell_print(sh, "%6d %6d %6d   %u.%02u", x, y, z,
+			    (unsigned)(mag * 49 / 1000),
+			    (unsigned)((mag * 49 / 10) % 100));
+		k_sleep(K_MSEC(100));
+	}
+	return 0;
+}
+SHELL_CMD_REGISTER(hg, NULL, "ADXL375 state and live readings: hg [samples]", cmd_hg);
