@@ -26,6 +26,13 @@
 
 <main>
   <section id="charts">
+    <div class="chart-box" id="pose-box">
+      <h2>Wrist attitude + last punch path — L / R
+        <span class="hint">orientation from accel+gyro, path from zero-velocity-reset integration; yaw drifts without a magnetometer</span>
+        <button id="btn-zero" title="Take the current wrist attitude as the guard reference">Zero</button>
+      </h2>
+      <canvas id="pose-canvas"></canvas>
+    </div>
     <div class="chart-box"><h2>High-g |a| (impact) — L / R</h2><div id="chart-hg"></div></div>
     <div class="chart-box"><h2>FSR f0 (ADC counts, peak-held) — L / R</h2><div id="chart-f0"></div></div>
     <div class="chart-box"><h2>FSR f1 (ADC counts, peak-held) — L / R</h2><div id="chart-f1"></div></div>

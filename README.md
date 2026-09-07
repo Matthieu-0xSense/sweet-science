@@ -146,6 +146,28 @@ the same instant.
 **Replay**: pick any past `.jsonl` in the "replay" file input — replays at 10x
 into the same panel.
 
+**Wrist attitude + punch path** (top strip): two animated gloves driven by the
+100 Hz stream, each trailing the path of its last punch with a reach readout.
+What a wrist IMU can and cannot give, and what the view does about it:
+
+- *Absolute position in the room*: not recoverable. Acceleration integrated
+  twice drifts to nonsense within a second and nothing external pulls it
+  back. The view never claims it.
+- *Orientation*: recoverable. Mahony-style filter — gyro integration
+  corrected toward measured gravity, with the correction gain falling to zero
+  more than 0.25 g away from 1 g, since mid-punch the accelerometer is not
+  measuring gravity. Yaw has no anchor (no magnetometer in the stream) and
+  drifts slowly; **Zero** re-anchors both gloves to the current guard. The
+  first moment of stillness zeroes automatically.
+- *Per-punch path*: recoverable with a zero-velocity reset. A punch is
+  200-300 ms between two still moments; velocity and position reset at every
+  still moment and integrate only during the swing, so drift gets no time to
+  accumulate. Integration stops 0.8 s into any swing, where drift wins.
+
+Verified against an analytic swing (0.9 g for 150 ms, then brake): 0.199 m
+computed vs 0.199 m expected, 0.205 m on a 45° tilted mount. Not yet checked
+against a real punch — no session on disk contains one.
+
 ## Threshold fitting
 
 The detection constants in `firmware/src/boxe.h` were guessed and never
