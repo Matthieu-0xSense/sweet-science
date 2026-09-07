@@ -27,6 +27,7 @@ static struct {
 	uint32_t contact_start_us, contact_end_us;
 	bool contact;
 	uint32_t seq;
+	bool primed;                 /* baseline seeded from the first sample */
 } d;
 
 static struct event_packet pending;
@@ -47,8 +48,35 @@ void punch_detect_feed(uint32_t t_us, uint16_t f0, uint16_t f1,
 {
 	uint16_t mag = hg_mag(hgx, hgy, hgz);
 
-	/* baseline tracking only while idle (EMA, tau ~1 s) */
-	if (d.st == IDLE) {
+	/*
+	 * Seed the baseline from the first sample instead of walking up from
+	 * zero. A glove holds the FSR at a resting preload of a couple of
+	 * thousand counts, so the first sample of an unseeded detector reads
+	 * thousands of counts above a baseline of 0 — far past
+	 * PUNCH_FSR_CONTACT — and contact asserts on sample #1.
+	 */
+	if (!d.primed) {
+		d.f0_base = f0;
+		d.f1_base = f1;
+		d.primed = true;
+	}
+
+	/*
+	 * Track the baseline whenever we are not inside a punch (EMA, tau
+	 * ~64 ms at 1 kHz).
+	 *
+	 * Tracking only in IDLE was self-defeating: any contact that asserted
+	 * took the state machine out of IDLE, which froze the baseline, which
+	 * kept contact asserted. The latch sustained itself for the rest of
+	 * the session and pinned events to one per (PUNCH_WINDOW_MS +
+	 * PUNCH_REFRACT_MS) — a measured 1.82 events/s on a node sitting
+	 * still, matching 1/(0.400 + 0.150) exactly.
+	 *
+	 * REFRACT is included so the baseline can catch up with a preload that
+	 * changed during the punch; ACTIVE is still excluded, or the baseline
+	 * would climb into the pulse and clip its tail.
+	 */
+	if (d.st == IDLE || d.st == REFRACT) {
 		d.f0_base += ((int32_t)f0 - d.f0_base) / 64;
 		d.f1_base += ((int32_t)f1 - d.f1_base) / 64;
 	}

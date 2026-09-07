@@ -159,6 +159,20 @@ static void status_fn(struct k_work *work)
 		mv = 0;
 	}
 
+	/*
+	 * Throw away one FSR conversion before the sample loop takes its next
+	 * one. The battery channel shares the SAADC with the FSR channels and
+	 * uses a different input configuration, and the first fsr0 conversion
+	 * after a vbat conversion reads about 160 counts high — one sample
+	 * wide, on fsr0 only, because fsr1 is read second and has settled.
+	 *
+	 * That is above PUNCH_FSR_CONTACT, so it asserted contact for exactly
+	 * one sample and manufactured a punch event once per second: 27 events
+	 * in a 32 s capture of a node lying still, every one of them 1.000 s
+	 * after the last.
+	 */
+	(void)adc_read_raw(&fsr0);
+
 	measured_hz = ticks_this_second;
 	ticks_this_second = 0;
 

@@ -50,7 +50,7 @@ GRID = {
     "window_ms": [150, 250, 400],
     "refract_ms": [100, 150, 250],
     "quiet_ms": [30],
-    "baseline_mode": ["idle", "always"],
+    "baseline_mode": list(punch_detect.BASELINE_MODES),
 }
 
 
@@ -161,8 +161,10 @@ def main():
     ap.add_argument("--json", type=Path, help="write the full ranking")
     for name, values in GRID.items():
         if name == "baseline_mode":
-            ap.add_argument("--baseline-mode", default="idle,always",
-                            help="idle, always, or both (default both)")
+            ap.add_argument("--baseline-mode",
+                            default=",".join(punch_detect.BASELINE_MODES),
+                            help="comma-separated: "
+                                 + ", ".join(punch_detect.BASELINE_MODES))
         else:
             ap.add_argument(f"--{name.replace('_', '-')}",
                             default=",".join(str(v) for v in values),

@@ -13,8 +13,9 @@ not exist. Integer widths and truncation are reproduced deliberately:
   * hg_mag() is the same sqrt-free approximation (hi + lo/2), not a real norm
 
 Anything changed here has to be changed in the C, and vice versa. The one
-deliberate addition is `baseline_mode`, which exists to *measure* a suspected
-bug rather than to fix it blind -- see Params below.
+deliberate addition is `baseline_mode`: the firmware implements exactly one of
+its three settings, and the other two exist so the choice can be re-scored on
+real punches rather than argued about -- see Params below.
 """
 
 from dataclasses import dataclass, replace
@@ -29,9 +30,11 @@ DEFAULTS = dict(
     window_ms=400,        # PUNCH_WINDOW_MS
     refract_ms=150,       # PUNCH_REFRACT_MS
     quiet_ms=30,          # hardcoded at punch_detect.c:93
-    baseline_mode="idle",
+    baseline_mode="idle_refract",
     baseline_shift=6,     # EMA divisor is 1 << shift; the C uses 64
 )
+
+BASELINE_MODES = ("idle", "idle_refract", "always")
 
 
 @dataclass(frozen=True)
@@ -39,17 +42,28 @@ class Params:
     """Detector constants.
 
     baseline_mode:
-      "idle"   - what the firmware does today: track the FSR baseline only in
-                 IDLE. If a resting glove preload exceeds fsr_contact, contact
-                 latches, the state machine never returns to IDLE, the
-                 baseline stops tracking and the latch sustains itself. This
-                 is what the 2026-09-01 capture looks like.
-      "always" - track the baseline in every state. Removes the latch, at the
-                 cost of the baseline creeping up during a long contact and
-                 clipping the tail of the pulse.
+      "idle"         - the original tracking rule: baseline moves only in
+                       IDLE. Combined with the original zero-seeded baseline
+                       this deadlocked — a gloved sensor reads thousands of
+                       counts above a baseline of 0, contact asserts on
+                       sample #1, the state machine leaves IDLE, the baseline
+                       freezes and the latch feeds itself. Measured at
+                       1.82 events/s on a still node, exactly
+                       1/(window_ms + refract_ms). Priming defuses that on
+                       its own, so this mode is no longer the disaster it
+                       was; it is kept to show what the tracking rule alone
+                       is worth.
+      "idle_refract" - what the firmware does now, and the default: also
+                       track during REFRACT, so the baseline can catch up
+                       with a preload that changed during the punch. ACTIVE
+                       stays excluded or the baseline climbs into the pulse
+                       and clips its tail.
+      "always"       - track in every state, ACTIVE included. Kept as the
+                       upper bound on how aggressive recovery can get.
 
-    Sweeping both answers whether the latch actually costs detections on real
-    data before anyone edits the firmware.
+    All three prime the baseline from the first sample, as the firmware now
+    does. Sweeping them says how much the choice is worth on real punches
+    rather than in an argument.
     """
     hg_start_lsb: int = DEFAULTS["hg_start_lsb"]
     fsr_contact: int = DEFAULTS["fsr_contact"]
@@ -155,16 +169,17 @@ class PunchDetector:
         """
         p = self.p
 
-        # The node boots with a zero baseline and the EMA walks up to the
-        # resting level over ~1 s. Seeding from the first sample instead keeps
-        # a capture's first second usable; the firmware pays the walk-up on
-        # every boot, long before anyone throws a punch.
+        # Seed from the first sample, as punch_detect.c now does. Walking up
+        # from a zero baseline meant the first sample of a gloved sensor read
+        # thousands of counts "above baseline" and latched contact on sample
+        # #1 — see baseline_mode in Params.
         if not self._primed:
             self.f0_base, self.f1_base = f0, f1
             self._primed = True
 
         div = 1 << p.baseline_shift
-        if p.baseline_mode == "always" or self.st == IDLE:
+        if (p.baseline_mode == "always" or self.st == IDLE or
+                (p.baseline_mode == "idle_refract" and self.st == REFRACT)):
             self.f0_base += c_div(f0 - self.f0_base, div)
             self.f1_base += c_div(f1 - self.f1_base, div)
 
@@ -253,7 +268,7 @@ if __name__ == "__main__":
                  "quiet_ms", "baseline_shift"):
         ap.add_argument(f"--{name.replace('_', '-')}", type=int,
                         default=DEFAULTS[name])
-    ap.add_argument("--baseline-mode", choices=("idle", "always"),
+    ap.add_argument("--baseline-mode", choices=BASELINE_MODES,
                     default=DEFAULTS["baseline_mode"])
     args = ap.parse_args()
 
