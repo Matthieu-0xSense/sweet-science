@@ -275,14 +275,30 @@ static int cmd_fsr(const struct shell *sh, size_t argc, char **argv)
 		}
 	}
 
-	shell_print(sh, "  f0    f1     mV0    mV1");
+	/*
+	 * Report the signed reading and the driver's error code, not the
+	 * clamped value the sample loop uses. adc_read_raw() maps a failed
+	 * conversion, a slightly negative reading at 0 V, and a genuine 0 V
+	 * onto the same 0 — which is exactly the ambiguity that made a dead
+	 * channel indistinguishable from an unloaded sensor.
+	 */
+	shell_print(sh, " f0raw err  f1raw err     mV0    mV1");
 	for (uint32_t i = 0; i < n; i++) {
-		uint16_t r0 = adc_read_raw(&fsr0);
-		uint16_t r1 = adc_read_raw(&fsr1);
+		int16_t v0 = 0, v1 = 0;
+		struct adc_sequence s0 = { .buffer = &v0,
+					   .buffer_size = sizeof(v0) };
+		struct adc_sequence s1 = { .buffer = &v1,
+					   .buffer_size = sizeof(v1) };
 
-		shell_print(sh, "%5u %5u  %6u %6u", r0, r1,
-			    (unsigned)((uint32_t)r0 * 3600 / 4095),
-			    (unsigned)((uint32_t)r1 * 3600 / 4095));
+		adc_sequence_init_dt(&fsr0, &s0);
+		int e0 = adc_read_dt(&fsr0, &s0);
+
+		adc_sequence_init_dt(&fsr1, &s1);
+		int e1 = adc_read_dt(&fsr1, &s1);
+
+		shell_print(sh, "%6d %3d %6d %3d  %6d %6d", v0, e0, v1, e1,
+			    (int)((int32_t)v0 * 3600 / 4095),
+			    (int)((int32_t)v1 * 3600 / 4095));
 		k_sleep(K_MSEC(100));
 	}
 	return 0;

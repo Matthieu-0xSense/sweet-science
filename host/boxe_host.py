@@ -394,6 +394,13 @@ async def main():
                          "the 32-deep node queue (measured: zero loss on both "
                          "links). Give a hand (--raw R) to halve the radio "
                          "load if an adapter still struggles")
+    ap.add_argument("--seconds", type=float, metavar="N",
+                    help="stop after N seconds and exit cleanly. Use this "
+                         "rather than wrapping the hub in a shell timeout: on "
+                         "Windows that kills the shell and leaves this process "
+                         "connected, and a node with a live connection stops "
+                         "advertising (CONFIG_BT_MAX_CONN=1), so both nodes "
+                         "then look dead to the next scan")
     args = ap.parse_args()
 
     if args.raw and args.sim:
@@ -408,7 +415,19 @@ async def main():
                            args.raw in ("L", "both")),
                   ble_node(hub, "BOXE-R", "R",
                            args.raw in ("R", "both"))]
-    await asyncio.gather(*tasks)
+
+    if args.seconds:
+        # wait_for cancels the gather, which unwinds each ble_node through its
+        # finally: the capture files are closed and the links dropped, so the
+        # nodes go back to advertising instead of being held by a process
+        # nobody can see any more.
+        try:
+            await asyncio.wait_for(asyncio.gather(*tasks), args.seconds)
+        except asyncio.TimeoutError:
+            hub.log("info", f"stopping after {args.seconds:g} s")
+    else:
+        await asyncio.gather(*tasks)
+    hub.flush()
 
 
 if __name__ == "__main__":
