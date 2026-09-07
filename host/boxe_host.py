@@ -254,11 +254,49 @@ class RawCapture:
         self.gaps = 0
         self.queue_lost = 0
         self.prev_seq = None
+        self.started = False
+        self.discarded = 0
         self.last_report = time.time()
         hub.log("info", f"raw capture -> logs/{name}")
 
+    # The first notification after a subscribe is not always ours. Windows
+    # delivers a packet from the previous session, or -- the first time a
+    # node is seen after the characteristic was added -- a buffer out of its
+    # stale GATT cache, which arrives as 208 bytes of Zephyr's 0xAA stack
+    # fill. Both were observed once each on real hardware, and one bad packet
+    # is enough to wreck every statistic downstream: a stale timebase inflates
+    # the capture duration tenfold and a stale seq reads as 60k lost packets.
+    #
+    # The node resets seq to 0 when capture is enabled, so a real capture
+    # always opens at seq 0. Anything before that is not from this session.
+    # If seq 0 genuinely goes missing, give up on the gate rather than throw
+    # the recording away.
+    MAX_DISCARD = 20
+
+    def _accept(self, seq: int) -> bool:
+        if self.started:
+            return True
+        if seq == 0:
+            self.started = True
+            if self.discarded:
+                self.hub.log("info", f"{self.node}: dropped {self.discarded} "
+                                     f"stale packet(s) before the capture")
+            return True
+        self.discarded += 1
+        if self.discarded >= self.MAX_DISCARD:
+            self.started = True
+            self.hub.log("warn", f"{self.node}: no seq 0 in "
+                                 f"{self.MAX_DISCARD} packets — recording "
+                                 f"anyway, check the head of the capture")
+            return True
+        return False
+
     def on_packet(self, data: bytes):
         now = time.time()
+        if len(data) == self.writer.packet_size:
+            seq, _ = struct.unpack_from("<HH", data, 4)
+            if not self._accept(seq):
+                return
         if not self.writer.append(now, data):
             self.short += 1
             if self.short == 1:
@@ -349,10 +387,13 @@ async def main():
     src.add_argument("--sim", action="store_true", help="simulated nodes")
     src.add_argument("--ble", action="store_true", help="real BLE nodes")
     ap.add_argument("--no-log", action="store_true", help="disable JSONL log")
-    ap.add_argument("--raw", action="store_true",
-                    help="also capture the raw 1 kHz stream to "
+    ap.add_argument("--raw", nargs="?", const="both", choices=("L", "R", "both"),
+                    help="capture the raw 1 kHz stream to "
                          "logs/raw_<node>_*.bin (for sweep.py). BLE only; "
-                         "adds ~10 kB/s per node")
+                         "~10 kB/s per node. Give a hand (--raw R) to capture "
+                         "one node: two concurrent streams is more than most "
+                         "adapters schedule evenly, and the loser drops "
+                         "packets")
     args = ap.parse_args()
 
     if args.raw and args.sim:
@@ -363,8 +404,10 @@ async def main():
     if args.sim:
         tasks += [sim_node(hub, "L"), sim_node(hub, "R")]
     else:
-        tasks += [ble_node(hub, "BOXE-L", "L", args.raw),
-                  ble_node(hub, "BOXE-R", "R", args.raw)]
+        tasks += [ble_node(hub, "BOXE-L", "L",
+                           args.raw in ("L", "both")),
+                  ble_node(hub, "BOXE-R", "R",
+                           args.raw in ("R", "both"))]
     await asyncio.gather(*tasks)
 
 

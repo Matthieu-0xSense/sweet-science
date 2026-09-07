@@ -29,10 +29,13 @@ static void ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 
 /* --- raw capture ------------------------------------------------------- */
 
-/* Eight packets = 160 ms of slack between the 1 kHz producer and the radio.
- * Deep enough to ride out a missed connection event, shallow enough that a
- * host which stops draining is reported as loss rather than latency. */
-#define RAW_QUEUE_DEPTH   8
+/* 32 packets = 640 ms of slack between the 1 kHz producer and the radio.
+ * Eight (160 ms) was not enough in practice: with both nodes streaming, the
+ * Windows adapter interleaves the two links unevenly and one of them stalls
+ * for hundreds of milliseconds at a time, which cost 30 % of a capture. The
+ * buffer is 6.6 kB of a 256 kB part, and a host that stops draining entirely
+ * is still reported as loss rather than absorbed as latency. */
+#define RAW_QUEUE_DEPTH   32
 #define RAW_TX_RETRIES    50
 #define RAW_TX_RETRY_MS   2
 

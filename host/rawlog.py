@@ -157,11 +157,20 @@ class RawReader:
 def stats(path: Path) -> dict:
     r = RawReader(path)
     n_pkt = n_lost_queue = 0
-    seq_gaps = seq_lost = 0
+    seq_gaps = seq_lost = restarts = 0
     prev_seq = None
-    first_us = last_us = None
+    prev_us = None
+    span_us = 0
     hg_peak = 0.0
     f_max = 0
+
+    # A gap bigger than this is not loss. The node's queue is 8 deep and the
+    # radio recovers in milliseconds, so a jump of thousands means the seq
+    # counter restarted -- a stale packet from a previous capture, or a
+    # capture re-enabled mid-file. Counting that as loss reports 60k dropped
+    # packets on a recording that dropped none.
+    MAX_PLAUSIBLE_GAP = 1000
+    MAX_PLAUSIBLE_STEP_US = 1_000_000
 
     for pkt in r.packets():
         n_pkt += 1
@@ -169,18 +178,27 @@ def stats(path: Path) -> dict:
         if prev_seq is not None:
             step = (pkt.seq - prev_seq) & 0xFFFF
             if step != 1:
-                seq_gaps += 1
-                seq_lost += step - 1
+                if step > MAX_PLAUSIBLE_GAP:
+                    restarts += 1
+                else:
+                    seq_gaps += 1
+                    seq_lost += step - 1
         prev_seq = pkt.seq
-        if first_us is None:
-            first_us = pkt.t_us_base
-        last_us = pkt.t_us_base
+
+        # Sum plausible steps rather than measuring first to last: one stale
+        # packet at the head otherwise stretches the duration by minutes.
+        if prev_us is not None:
+            d = (pkt.t_us_base - prev_us) & 0xFFFFFFFF
+            if d <= MAX_PLAUSIBLE_STEP_US:
+                span_us += d
+        prev_us = pkt.t_us_base
+
         for s in pkt.samples:
             hg_peak = max(hg_peak, s.hg_g)
             f_max = max(f_max, s.f0, s.f1)
 
     n_samples = n_pkt * r.batch
-    span_s = ((last_us - first_us) & 0xFFFFFFFF) / 1e6 if n_pkt > 1 else 0.0
+    span_s = span_us / 1e6
     expected = n_pkt + n_lost_queue + seq_lost
     return {
         "file": path.name,
@@ -189,9 +207,11 @@ def stats(path: Path) -> dict:
         "packets": n_pkt,
         "samples": n_samples,
         "duration_s": round(span_s, 2),
+        "measured_hz": (round(n_samples / span_s, 1) if span_s else 0.0),
         "queue_dropped_packets": n_lost_queue,
         "radio_dropped_packets": seq_lost,
         "seq_gaps": seq_gaps,
+        "seq_restarts": restarts,
         "loss_pct": round(100 * (expected - n_pkt) / expected, 3) if expected else 0.0,
         "peak_g": round(hg_peak, 1),
         "max_fsr_counts": f_max,

@@ -179,6 +179,21 @@ def main():
     if not samples_raw:
         sys.exit("capture has no samples")
     offset = reader.clock_offset()
+
+    # A hole in the capture is not a quiet moment: the replayed state machine
+    # cannot see across it, and every candidate is scored on a recording that
+    # is missing punches nobody can account for. Say so before the fit rather
+    # than after someone has pasted the numbers into boxe.h.
+    st = rawlog.stats(args.capture)
+    if st["loss_pct"] > 1.0 or st["seq_restarts"]:
+        print(f"[sweep] WARNING: {st['loss_pct']}% of this capture is missing "
+              f"({st['queue_dropped_packets']} queue, "
+              f"{st['radio_dropped_packets']} radio"
+              + (f", {st['seq_restarts']} seq restart(s)"
+                 if st["seq_restarts"] else "") + ").")
+        print("[sweep] Fitted thresholds will reflect the holes. Re-record "
+              "one node at a time (boxe_host.py --raw L) before trusting "
+              "this.")
     # hg_mag() has no parameters, so it is computed once here rather than
     # once per candidate — this is most of the runtime of the whole sweep.
     samples = [(s.t_us, s.f0, s.f1, punch_detect.hg_mag(s.hgx, s.hgy, s.hgz))
