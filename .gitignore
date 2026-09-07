@@ -1,0 +1,15 @@
+# Zephyr / CMake build trees
+build*/
+
+# runtime data — session logs are large and specific to one recording
+logs/
+host/fsr_calib.json
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# firmware images
+*.uf2
+*.hex

@@ -1,0 +1,15 @@
+# Boxe_AI application options
+
+menu "Boxe_AI"
+
+config BOXE_HAND_R
+	bool "Build the right-hand node"
+	help
+	  The two wrist nodes run identical firmware and differ only by the
+	  name they advertise: BOXE-L (default) or BOXE-R. Without this symbol
+	  a -DCONFIG_BOXE_HAND_R=y on the west command line is silently
+	  discarded and both nodes come up as BOXE-L.
+
+endmenu
+
+source "Kconfig.zephyr"

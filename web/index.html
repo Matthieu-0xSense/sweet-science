@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Boxe AI — Debug Panel</title>
+<link rel="stylesheet" href="vendor/uPlot.min.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <h1>🥊 Boxe AI — Debug</h1>
+  <div id="conn-bar">
+    <input type="text" id="ws-url" value="ws://127.0.0.1:8765">
+    <button id="btn-connect">Connect</button>
+    <span class="node-badge" id="badge-host">host</span>
+    <span class="node-badge" id="badge-L">L</span>
+    <span class="node-badge" id="badge-R">R</span>
+    <label class="replay-label">replay:
+      <input type="file" id="replay-file" accept=".jsonl">
+    </label>
+    <button id="btn-live" title="Resume live follow (or double-click a chart)">Live</button>
+    <button id="btn-pause">Pause</button>
+  </div>
+</header>
+
+<main>
+  <section id="charts">
+    <div class="chart-box"><h2>High-g |a| (impact) — L / R</h2><div id="chart-hg"></div></div>
+    <div class="chart-box"><h2>FSR f0 (ADC counts, peak-held) — L / R</h2><div id="chart-f0"></div></div>
+    <div class="chart-box"><h2>FSR f1 (ADC counts, peak-held) — L / R</h2><div id="chart-f1"></div></div>
+    <div class="chart-box"><h2>Accel X (swing, mg) — L / R</h2><div id="chart-ax"></div></div>
+    <div class="chart-box"><h2>Gyro X (dps) — L / R</h2><div id="chart-gx"></div></div>
+  </section>
+
+  <aside id="side">
+    <div class="panel" id="status-panel">
+      <h2>Node status</h2>
+      <table id="status-table">
+        <tr><th></th><th>L</th><th>R</th></tr>
+        <tr><td>batt mV</td><td id="st-L-batt">—</td><td id="st-R-batt">—</td></tr>
+        <tr><td>loop Hz</td><td id="st-L-loop">—</td><td id="st-R-loop">—</td></tr>
+        <tr><td>dropped</td><td id="st-L-drop">—</td><td id="st-R-drop">—</td></tr>
+        <tr><td>events</td><td id="st-L-ev">—</td><td id="st-R-ev">—</td></tr>
+        <tr><td>RSSI</td><td id="st-L-rssi">—</td><td id="st-R-rssi">—</td></tr>
+      </table>
+    </div>
+
+    <div class="panel" id="events-panel">
+      <h2>Punch events <span id="ev-count"></span></h2>
+      <table id="events-table">
+        <thead><tr>
+          <th>t</th><th>hand</th><th>peak g</th><th>FSR</th><th>ms</th><th>exec</th><th>hit</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="panel" id="log-panel">
+      <h2>Log</h2>
+      <div id="log-console"></div>
+    </div>
+  </aside>
+</main>
+
+<script src="vendor/uPlot.iife.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

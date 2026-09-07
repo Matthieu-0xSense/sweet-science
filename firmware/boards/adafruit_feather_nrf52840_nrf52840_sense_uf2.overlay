@@ -1,0 +1,72 @@
+/*
+ * Boxe_AI node — devicetree overlay, Feather nRF52840 Sense (uf2 variant).
+ *
+ * The two I2C sensors (ADXL375 on the STEMMA QT connector, on-board LSM6DS33)
+ * have no usable Zephyr driver, so they are driven register-level from
+ * src/adxl375.c and src/lsm6ds33.c. Nothing to declare for them here beyond
+ * the bus speed.
+ *
+ * FlexiForce A201 dividers: A0 = P0.04 = AIN2, A1 = P0.05 = AIN3.
+ * Battery sense: the board wires VBAT through a 100k/100k divider to
+ * P0.29 = AIN5 (see vbatt node in the board dtsi).
+ */
+
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/adc/nrf-adc.h>
+#include <zephyr/dt-bindings/i2c/i2c.h>
+
+&i2c0 {
+	status = "okay";
+	/* 400 kHz: a 6-byte ADXL375 read must fit inside the 1 ms sample tick */
+	clock-frequency = <I2C_BITRATE_FAST>;
+};
+
+/ {
+	zephyr,user {
+		io-channels = <&adc 2>, <&adc 3>, <&adc 5>;
+		io-channel-names = "fsr0", "fsr1", "vbat";
+	};
+};
+
+&adc {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/* FSR channels: 0-3.3 V into a 3.6 V window (gain 1/6, 0.6 V ref).
+	 *
+	 * 20 us acquisition, not the usual 10: the SAADC caps source impedance
+	 * per acquisition time (10 us -> 100k, 15 -> 200k, 20 -> 400k) and the
+	 * divider presents R_fixed || R_fsr, which is ~100k unloaded with the
+	 * 100k fixed resistor. 10 us would sit exactly on the limit. Two
+	 * channels at 20 us is 40 us of a 1000 us tick.
+	 */
+	channel@2 {
+		reg = <2>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 20)>;
+		zephyr,input-positive = <NRF_SAADC_AIN2>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 20)>;
+		zephyr,input-positive = <NRF_SAADC_AIN3>;
+		zephyr,resolution = <12>;
+	};
+
+	/* VBAT after the on-board 2:1 divider: 4.2 V -> 2.1 V, needs a 2.4 V
+	 * window (gain 1/4). Longer acquisition — high divider impedance. */
+	channel@5 {
+		reg = <5>;
+		zephyr,gain = "ADC_GAIN_1_4";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 40)>;
+		zephyr,input-positive = <NRF_SAADC_AIN5>;
+		zephyr,resolution = <12>;
+	};
+};
