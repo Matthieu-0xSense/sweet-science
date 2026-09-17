@@ -28,6 +28,8 @@ static struct {
 	bool contact;
 	uint32_t seq;
 	bool primed;                 /* baseline seeded from the first sample */
+	uint16_t run;                /* consecutive active samples while IDLE */
+	uint32_t run_start_us;
 } d;
 
 static struct event_packet pending;
@@ -89,14 +91,35 @@ void punch_detect_feed(uint32_t t_us, uint16_t f0, uint16_t f1,
 
 	switch (d.st) {
 	case IDLE:
-		if (active_now) {
+		/*
+		 * Require PUNCH_CONFIRM_MS of uninterrupted activity before
+		 * opening an event. One sample used to be enough, and on a
+		 * gloved node on USB that fired ~1 event/s with nothing moving:
+		 * the FSR line carries ~130 counts p-p of 50 Hz hum plus 1-2 ms
+		 * spikes, and a spike on a hum crest clears PUNCH_FSR_CONTACT
+		 * for exactly one or two samples. Replayed over the raw
+		 * captures, 3 ms removes every such event and keeps the real
+		 * punches; 5 ms starts eating them. Mirrored in
+		 * host/punch_detect.py (confirm_ms) — change both.
+		 */
+		if (!active_now) {
+			d.run = 0;
+			break;
+		}
+		if (d.run == 0) {
+			d.run_start_us = t_us;
+		}
+		if (++d.run >= PUNCH_CONFIRM_MS * (SAMPLE_HZ / 1000)) {
+			d.run = 0;
 			d.peak_hg = 0;
 			d.f0_peak = d.f1_peak = 0;
 			d.impulse = 0;
 			d.contact = false;
 			d.contact_start_us = d.contact_end_us = 0;
 			d.st = ACTIVE;
-			d.t_start_us = t_us;
+			/* onset = first sample of the confirmed run, so exec_ms
+			 * is not shortened by the confirmation delay */
+			d.t_start_us = d.run_start_us;
 			d.t_last_active_us = t_us;
 		}
 		break;

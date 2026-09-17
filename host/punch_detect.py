@@ -32,6 +32,7 @@ DEFAULTS = dict(
     quiet_ms=30,          # hardcoded at punch_detect.c:93
     baseline_mode="idle_refract",
     baseline_shift=6,     # EMA divisor is 1 << shift; the C uses 64
+    confirm_ms=3,         # PUNCH_CONFIRM_MS
 )
 
 BASELINE_MODES = ("idle", "idle_refract", "always")
@@ -72,6 +73,12 @@ class Params:
     quiet_ms: int = DEFAULTS["quiet_ms"]
     baseline_mode: str = DEFAULTS["baseline_mode"]
     baseline_shift: int = DEFAULTS["baseline_shift"]
+    # Consecutive active samples needed to leave IDLE. 1 is the old behaviour:
+    # a single sample starts an event. On a gloved, USB-powered node the FSR
+    # line carries ~130 counts p-p of 50 Hz hum plus 1-2 ms spikes, and
+    # hum-crest + spike clears fsr_contact for exactly one or two samples —
+    # 1 event/s on a node lying on a table. A real contact lasts >= 5 ms.
+    confirm_ms: int = DEFAULTS["confirm_ms"]
 
     def replace(self, **kw) -> "Params":
         return replace(self, **kw)
@@ -153,6 +160,8 @@ class PunchDetector:
         self.contact = False
         self.seq = 0
         self._primed = False
+        self._run = 0            # consecutive active samples while IDLE
+        self._run_start_us = 0
 
     def feed(self, t_us: int, f0: int, f1: int,
              hgx: int, hgy: int, hgz: int) -> Optional[Event]:
@@ -191,14 +200,23 @@ class PunchDetector:
         out = None
 
         if self.st == IDLE:
-            if active_now:
+            if not active_now:
+                self._run = 0
+            else:
+                if self._run == 0:
+                    self._run_start_us = t_us
+                self._run += 1
+            if active_now and self._run >= p.confirm_ms * (SAMPLE_HZ // 1000):
+                self._run = 0
                 self.peak_hg = 0
                 self.f0_peak = self.f1_peak = 0
                 self.impulse = 0
                 self.contact = False
                 self.contact_start_us = self.contact_end_us = 0
                 self.st = ACTIVE
-                self.t_start_us = t_us
+                # onset is the first sample of the confirmed run, not the
+                # sample that confirmed it — exec_ms is measured from here
+                self.t_start_us = self._run_start_us
                 self.t_last_active_us = t_us
 
         elif self.st == ACTIVE:

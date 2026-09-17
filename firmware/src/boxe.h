@@ -16,6 +16,7 @@
 #define PUNCH_FSR_CONTACT    150    /* ADC counts above baseline */
 #define PUNCH_WINDOW_MS      400
 #define PUNCH_REFRACT_MS     150
+#define PUNCH_CONFIRM_MS     3      /* sustained activity needed to open an event */
 
 struct __packed imu_sample {
 	int16_t ax, ay, az;         /* LSM6DS33, mg */

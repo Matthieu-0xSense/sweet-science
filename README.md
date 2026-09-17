@@ -184,6 +184,17 @@ python sweep.py ../logs/raw_L_*.bin --labels ../logs/labels_*.txt
 `sweep.py` prints a ranked table and a `#define` block to paste into
 `boxe.h`. Then reflash and re-record to confirm.
 
+One constant is already fitted this way: **`PUNCH_CONFIRM_MS` = 3** (mirrored
+as `confirm_ms` in `host/punch_detect.py`). An event used to open on a single
+active sample, and a gloved node lying still fired ~0.5–1 event/s: the FSR line
+carries ~130 counts p-p of 50 Hz hum on top of the glove preload, plus 1–2 ms
+spikes, and a spike on a hum crest clears `PUNCH_FSR_CONTACT` for one or two
+samples. Replayed over every raw capture, 3 ms of sustained activity removes
+all of those and keeps the real punches (28/28 on the 09-07 session); 5 ms
+starts eating them. Checked on hardware as an A/B: new firmware 0 events in
+47 s, old firmware 23, same table, same minute. Onset time (`t_start_us`) is
+the first sample of the confirmed run, so `exec_ms` is not shortened.
+
 - **`--raw` streams the undecimated 1 kHz view** of exactly what the detector
   consumes — high-g axes and both FSR channels, no thresholding — over GATT
   characteristic `0004`. Subscribing is what enables it, so there is no mode
