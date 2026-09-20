@@ -103,6 +103,8 @@ main {
 #pose-box h2 { display: flex; align-items: center; gap: 10px; }
 #pose-box .hint { font-weight: 400; opacity: 0.7; flex: 1; }
 #pose-box button { padding: 1px 10px; font-size: 11px; }
+#events-panel h2 { display: flex; align-items: center; gap: 10px; }
+#events-panel button { padding: 1px 10px; font-size: 11px; margin-left: auto; }
 #pose-canvas { width: 100%; height: 100%; display: block; }
 
 #side {
@@ -144,6 +146,7 @@ main {
 #events-table .hand-L { color: var(--left); }
 #events-table .hand-R { color: var(--right); }
 #events-table .miss { color: var(--fg-dim); }
+#events-table .press, #events-table .other { color: var(--fg-dim); font-style: italic; }
 #events-table .sat { color: var(--warn); }
 
 #log-panel { flex: 1 1 30%; }

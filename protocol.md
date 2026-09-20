@@ -105,7 +105,7 @@ Same JSON objects on both. One object per line in
  "t_us": 125000, "contact": true, "sat": false,
  "peak_g": 38.5, "f0": 2100, "f1": 1450,
  "width_ms": 14.2, "impulse": 18000, "seq": 12,
- "exec_ms": 142.0, "retract_ms": 210.0, "force_n": null}
+ "exec_ms": 142.0, "retract_ms": 210.0, "force_n": null, "kind": "punch"}
 {"t": ..., "node": "R", "type": "status",
  "uptime_s": 320, "batt_mv": 3960, "loop_hz": 1001,
  "dropped": 0, "events": 12, "rssi": -61}
@@ -115,6 +115,13 @@ Same JSON objects on both. One object per line in
 Units on the wire to the panel: `ax..az` mg, `gx..gz` dps, `hg` g (float,
 already scaled by host), `peak_g` g, `force_n` null until the calibration
 regression exists.
+
+`kind` is the host's reading of the two flags together, so the panel and
+`metrics.py` agree on what an event was: `punch` = contact and a swing
+(`peak_g` >= 5 g), `miss` = swing without contact, `press` = contact without a
+swing (glove going on, pad squeezed), `other` = neither. Only `punch` and
+`miss` count as thrown punches. The node does not classify: an event opens on
+either sensor and carries both flags, so the split can be refitted offline.
 
 ## Raw capture files (host → disk)
 

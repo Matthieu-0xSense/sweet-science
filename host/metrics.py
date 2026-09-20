@@ -80,6 +80,17 @@ def guard_pitch_series(imu, t0):
     return [(b * 10 + 5, mean(v)) for b, v in sorted(buckets.items())]
 
 
+def kind_of(e: dict) -> str:
+    """Event class; reconstructs it for logs written before `kind` existed."""
+    k = e.get("kind")
+    if k:
+        return k
+    swing = (e.get("peak_g") or 0) >= 5.0
+    if e.get("contact"):
+        return "punch" if swing else "press"
+    return "miss" if swing else "other"
+
+
 def analyze_round(events, imu, t_start, t_end):
     ev = [e for e in events if t_start <= e["t"] < t_end]
     im = [r for r in imu if t_start <= r["t"] < t_end]
@@ -87,13 +98,19 @@ def analyze_round(events, imu, t_start, t_end):
     out = {}
 
     for hand in ("L", "R", "*"):
-        e = ev if hand == "*" else [x for x in ev if x["node"] == hand]
-        hits = [x for x in e if x.get("contact")]
+        all_e = ev if hand == "*" else [x for x in ev if x["node"] == hand]
+        # Only thrown punches count — landed or missed. Presses (glove going
+        # on, pad squeezed) are logged for inspection but are not punches.
+        # Logs from before the host wrote `kind` fall back to the old rule.
+        e = [x for x in all_e if kind_of(x) in ("punch", "miss")]
+        hits = [x for x in e if kind_of(x) == "punch"]
+        presses = [x for x in all_e if kind_of(x) == "press"]
         peaks = [x["peak_g"] for x in e if x.get("peak_g")]
-        execs = [x["exec_ms"] for x in e if x.get("exec_ms")]
-        retr = [x["retract_ms"] for x in e if x.get("retract_ms")]
+        execs = [x["exec_ms"] for x in hits if x.get("exec_ms")]
+        retr = [x["retract_ms"] for x in hits if x.get("retract_ms")]
         out[hand] = {
             "punches": len(e),
+            "presses": len(presses),
             "per_min": round(len(e) / dur_min, 1) if dur_min else 0,
             "hit_rate": round(len(hits) / len(e), 2) if e else None,
             "peak_g_mean": round(mean(peaks), 1) if peaks else None,
@@ -105,8 +122,9 @@ def analyze_round(events, imu, t_start, t_end):
             "retract_ms_median": round(median(retr), 1) if retr else None,
         }
 
-    # combos: both hands merged, chronological
-    seq = sorted(ev, key=lambda x: x["t"])
+    # combos: both hands merged, chronological, thrown punches only
+    seq = sorted((x for x in ev if kind_of(x) in ("punch", "miss")),
+                 key=lambda x: x["t"])
     combos, cur = [], []
     for x in seq:
         if cur and x["t"] - cur[-1]["t"] <= COMBO_GAP_S:
@@ -180,7 +198,7 @@ def _drop(first, last):
 def print_report(rep):
     print(f"session: {rep['session_s']} s, {len(rep['rounds'])} round(s)\n")
     hdr = f"{'rd':>2} {'hand':>4} {'n':>4} {'/min':>5} {'hit%':>5} " \
-          f"{'g_avg':>6} {'g_max':>6} {'decay':>6} {'exec':>6} {'retr':>6}"
+          f"{'g_avg':>6} {'g_max':>6} {'decay':>6} {'exec':>6} {'retr':>6} {'press':>5}"
     print(hdr)
     print("-" * len(hdr))
     for r in rep["rounds"]:
@@ -192,7 +210,8 @@ def print_report(rep):
                   f"{s['peak_g_mean'] or '-':>6} {s['peak_g_max'] or '-':>6} "
                   f"{s['power_decay_per_min'] or '-':>6} "
                   f"{s['exec_ms_median'] or '-':>6} "
-                  f"{s['retract_ms_median'] or '-':>6}")
+                  f"{s['retract_ms_median'] or '-':>6} "
+                  f"{s['presses']:>5}")
         c = r["combos"]
         pats = " ".join(f"{p}x{n}" for p, n in c["top_patterns"])
         print(f"   combos: {c['count']} (max {c['longest']}) "

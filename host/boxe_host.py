@@ -44,6 +44,35 @@ RAW_BATCH = 20  # must match RAW_BATCH in firmware/src/boxe.h
 
 ADXL375_G_PER_LSB = 0.049  # 49 mg/LSB
 
+# An event opens on either sensor, so the stream carries more than punches:
+# putting a glove on loads the FSR for hundreds of ms and looks exactly like a
+# landed punch to the contact branch, minus the swing. The two flags together
+# say what happened; this is that decision, made once, here, so the panel and
+# metrics.py agree.
+#
+#   punch  contact and a swing   - a landed punch
+#   miss   swing, no contact     - thrown, did not land (or a feint)
+#   press  contact, no swing     - glove donned/adjusted, pad squeezed, tap
+#   other  neither               - the opening sensor fell below its threshold
+#                                  before ACTIVE recorded it; rare, keep visible
+#
+# The swing threshold is on the ADXL375 peak the node measured at 1 kHz. 5 g
+# is the same level the firmware uses to open an event on motion
+# (PUNCH_HG_START_LSB); a real punch peaks at 20-90 g, a glove going on at
+# 1-3 g. Refit against labelled sessions with the rest of the thresholds.
+PUNCH_SWING_G = 5.0
+
+
+def classify_event(contact: bool, peak_g: float) -> str:
+    swing = peak_g >= PUNCH_SWING_G
+    if contact and swing:
+        return "punch"
+    if swing:
+        return "miss"
+    if contact:
+        return "press"
+    return "other"
+
 # Filled from host/fsr_calib.json when it exists; force_n stays None otherwise.
 # See calibrate_fsr.py.
 FSR_CAL = fsr_calib.load()
@@ -163,6 +192,7 @@ async def sim_node(hub: Hub, node: str):
                 "exec_ms": round(random.gauss(160, 30), 1),
                 "retract_ms": round(random.gauss(220, 50), 1),
                 "force_n": None,
+                "kind": classify_event(contact, punch_peak),
             })
             punch_peak = 0.0
 
@@ -221,6 +251,7 @@ def parse_event(data: bytes, node: str):
         "exec_ms": round((t_us - t_start_us) / 1000, 1),
         "retract_ms": retract / 10,
         "force_n": force_n(f0, f1),
+        "kind": classify_event(bool(flags & 1), peak_hg * ADXL375_G_PER_LSB),
     }
 
 

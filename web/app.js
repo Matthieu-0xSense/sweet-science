@@ -407,13 +407,19 @@ function pushEvent(rec) {
   const tbody = document.querySelector("#events-table tbody");
   const tr = document.createElement("tr");
   const t = new Date(rec.t * 1000).toLocaleTimeString();
-  const hit = rec.contact ? "✔" : "miss";
-  tr.className = rec.contact ? "" : "miss";
+  // `kind` comes from the host (boxe_host.py classify_event); older logs
+  // replayed here lack it, so rebuild it from the flags the same way.
+  const kind = rec.kind ??
+    (rec.contact ? (rec.peak_g >= 5 ? "punch" : "press")
+                 : (rec.peak_g >= 5 ? "miss" : "other"));
+  const label = { punch: "✔ punch", miss: "miss", press: "press", other: "?" }[kind];
+  tr.className = kind === "punch" ? "" : kind;
+  // FSR: whichever channel took the hit — a punch lands on one knuckle
   tr.innerHTML =
     `<td>${t}</td><td class="hand-${rec.node}">${rec.node}</td>` +
     `<td class="${rec.sat ? "sat" : ""}">${rec.peak_g}${rec.sat ? "⚠" : ""}</td>` +
-    `<td>${rec.f0}</td><td>${rec.width_ms || ""}</td>` +
-    `<td>${rec.exec_ms ?? ""}</td><td>${hit}</td>`;
+    `<td>${Math.max(rec.f0 ?? 0, rec.f1 ?? 0)}</td><td>${rec.width_ms || ""}</td>` +
+    `<td>${rec.exec_ms ?? ""}</td><td>${label}</td>`;
   tbody.prepend(tr);
   while (tbody.children.length > MAX_EVENTS) tbody.lastChild.remove();
   document.getElementById("ev-count").textContent = `(${events.length})`;
@@ -481,6 +487,15 @@ function connect() {
 document.getElementById("btn-connect").onclick = connect;
 
 document.getElementById("btn-live").onclick = () => setFollow(true);
+
+// Panel-side only: the node's `events` counter in the status table is the
+// firmware's running total and is left alone, so the two can legitimately
+// disagree after a clear.
+document.getElementById("btn-clear-events").onclick = () => {
+  events = [];
+  document.querySelector("#events-table tbody").replaceChildren();
+  document.getElementById("ev-count").textContent = "";
+};
 setFollow(true);
 
 document.getElementById("btn-pause").onclick = (e) => {

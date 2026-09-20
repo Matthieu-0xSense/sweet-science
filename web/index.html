@@ -54,10 +54,12 @@
     </div>
 
     <div class="panel" id="events-panel">
-      <h2>Punch events <span id="ev-count"></span></h2>
+      <h2>Punch events <span id="ev-count"></span>
+        <button id="btn-clear-events" title="Empty the table (panel only — the node's own event counter keeps counting)">Clear</button>
+      </h2>
       <table id="events-table">
         <thead><tr>
-          <th>t</th><th>hand</th><th>peak g</th><th>FSR</th><th>ms</th><th>exec</th><th>hit</th>
+          <th>t</th><th>hand</th><th>peak g</th><th>FSR</th><th>ms</th><th>exec</th><th>kind</th>
         </tr></thead>
         <tbody></tbody>
       </table>
