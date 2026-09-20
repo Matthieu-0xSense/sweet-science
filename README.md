@@ -331,6 +331,9 @@ pyocd gdbserver -t nrf52840    # step debug
   on later Feather Sense revisions) — same register map and sensitivities.
 - `dfu` shell command reboots into the UF2 bootloader (GPREGRET magic 0x57),
   so reflashing needs no physical double-tap on RESET.
+- the red LED (D13, `led0`) blinks 50 ms every 2 s while the node is powered,
+  so the EN switch state is visible through the strap. Solid would cost ~2 mA
+  (15-20 % of the node's draw); the blink averages ~50 uA.
 - `fsr [samples]` prints raw SAADC counts and mV for both channels at 10 Hz.
   Otherwise the counts only surface inside an event packet, which needs a
   punch to fire — this is what sizes the divider's fixed resistor.

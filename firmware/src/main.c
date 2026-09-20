@@ -14,6 +14,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/adc.h>
+#include <zephyr/drivers/gpio.h>
 #include <stdlib.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/reboot.h>
@@ -36,6 +37,32 @@ static const struct adc_dt_spec fsr1 =
 	ADC_DT_SPEC_GET_BY_NAME(DT_PATH(zephyr_user), fsr1);
 static const struct adc_dt_spec vbat =
 	ADC_DT_SPEC_GET_BY_NAME(DT_PATH(zephyr_user), vbat);
+
+/*
+ * Red LED (D13, P1.09): a 50 ms blink every 2 s while the node is powered, so
+ * the EN switch state is visible through the strap. Solid would cost ~2 mA,
+ * 15-20 % of the node's draw on a 200 mAh pack; the blink averages ~50 uA.
+ * Both timers run in ISR context; the nRF GPIO driver is safe to call there.
+ */
+#define LED_PERIOD   K_SECONDS(2)
+#define LED_ON_TIME  K_MSEC(50)
+
+static const struct gpio_dt_spec led_on = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
+
+static void led_off_fn(struct k_timer *timer)
+{
+	ARG_UNUSED(timer);
+	(void)gpio_pin_set_dt(&led_on, 0);
+}
+K_TIMER_DEFINE(led_off_timer, led_off_fn, NULL);
+
+static void led_blink_fn(struct k_timer *timer)
+{
+	ARG_UNUSED(timer);
+	(void)gpio_pin_set_dt(&led_on, 1);
+	k_timer_start(&led_off_timer, LED_ON_TIME, K_NO_WAIT);
+}
+K_TIMER_DEFINE(led_blink_timer, led_blink_fn, NULL);
 
 static struct imu_packet stream_pkt;
 static uint8_t stream_fill;
@@ -208,6 +235,13 @@ K_TIMER_DEFINE(status_timer, status_tick, NULL);
 int main(void)
 {
 	LOG_INF("Boxe_AI node %s boot", NODE_NAME);
+
+	if (gpio_is_ready_dt(&led_on)) {
+		(void)gpio_pin_configure_dt(&led_on, GPIO_OUTPUT_INACTIVE);
+		k_timer_start(&led_blink_timer, K_NO_WAIT, LED_PERIOD);
+	} else {
+		LOG_ERR("led0 not ready");
+	}
 
 	if (!adc_is_ready_dt(&fsr0) || !adc_is_ready_dt(&fsr1) ||
 	    !adc_is_ready_dt(&vbat)) {
