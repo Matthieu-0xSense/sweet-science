@@ -400,14 +400,17 @@ pyocd gdbserver -t nrf52840    # step debug
   wide. This makes `imu_packet` 114 B rather than 94 B — fits, MTU is 247.
   `hg_*` is held the same way since the FIFO change (hardest tick, all three
   axes of it).
-- **The ADXL375 runs at 1600 Hz into its FIFO; the loop drains it each tick
-  and keeps the hardest entry.** At the old 800 Hz ODR the part's bandwidth
-  was 400 Hz, which smooths a 1-2 ms impact, and the one sample per tick
-  landed anywhere on the flank — the same punch read 20 % apart between
-  trials. 3200 Hz needs 3-4 six-byte I2C reads per tick and does not fit in
-  the 1 ms at 400 kHz alongside the SAADC and LSM6DS33; SPI would. `hg`
-  shell command prints the most FIFO entries ever found waiting and the
-  overrun count — near 32 means the loop ran late and entries were lost.
+- **The ADXL375 runs at 800 Hz into its FIFO; the loop drains it each tick
+  and keeps the hardest entry.** 1600 Hz was tried (400 Hz bandwidth smooths
+  a 1-2 ms impact, the same punch read 20 % apart between trials) and did
+  not survive the glove: over 400 kHz I2C the part is specified to 800 Hz
+  only, and above it a still arm read 5-16 g spikes — torn samples, an axis
+  near zero reading 0x00FF/0xFF00 — so guard position produced an event
+  every few hundred ms while `loop_hz` fell from 992 to ~930. Faster needs
+  SPI. An empty FIFO is never read (the data registers are mid-update) and
+  samples beyond +/-4096 LSB are dropped; the `hg` shell command prints that
+  drop count with the most FIFO entries ever found waiting and the overrun
+  count — near 32 means the loop ran late and entries were lost.
 - `lsm6ds33.c` accepts WHO_AM_I 0x69 (LSM6DS33) and 0x6A (LSM6DS3TR-C, fitted
   on later Feather Sense revisions) — same register map and sensitivities.
 - `dfu` shell command reboots into the UF2 bootloader (GPREGRET magic 0x57),

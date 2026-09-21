@@ -43,8 +43,19 @@ LOG_MODULE_DECLARE(boxe);
  * ~0.7 ms at 400 kHz, on top of the SAADC and the LSM6DS33; the loop would
  * miss ticks. Watch `loop_hz` in the status packet if you try it. SPI (the
  * breakout supports it, 5 MHz) would make it free.
+ *
+ * Back at 800 Hz until the part is on SPI. 1600 Hz over I2C did not hold up
+ * on the glove: a still arm read 5-16 g spikes (p99 5.9 g against 1.4 g at
+ * 800 Hz, same node, LSM6 showing 1.0 g and <10 dps), which opened an event
+ * every few hundred ms in guard, and loop_hz fell from 992 to 926-965. The
+ * datasheet caps the ODR at 800 Hz for 400 kHz I2C and warns of corrupted
+ * data above it. The spikes fit a torn sample — low and high byte from
+ * different conversions, so an axis near zero reads 0x00FF or 0xFF00,
+ * +/-12.5 g — and only showed in orientations that put an axis near zero.
+ * The FIFO stays on: at 0.8 entries per tick it still guarantees that no
+ * sample is skipped between two ticks.
  */
-#define ADXL375_ODR_HZ      1600
+#define ADXL375_ODR_HZ      800
 #if ADXL375_ODR_HZ == 3200
 #define BW_RATE_CODE        0x0F
 #elif ADXL375_ODR_HZ == 1600
@@ -80,9 +91,15 @@ static const struct device *const i2c = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 #define INIT_RETRIES        10
 #define INIT_RETRY_MS       5
 
+/* Full resolution is 13 bits: no real sample leaves +/-4096 LSB (+/-200 g).
+ * Anything beyond is a corrupted read, seen as 1215-1517 g "impacts". */
+#define SAMPLE_LSB_MAX      4096
+
 static uint32_t recoveries;
 static uint32_t fifo_overruns;      /* ticks that found the FIFO full */
 static uint8_t fifo_peak_entries;   /* most entries seen waiting */
+static uint32_t bad_samples;        /* reads rejected as out of range */
+static int16_t last_x, last_y, last_z;  /* last good sample */
 
 /*
  * The register writes only, with no probe and no sleeping. Split out because
@@ -214,8 +231,12 @@ static int read_sample(int16_t *x, int16_t *y, int16_t *z)
  * Pop what the FIFO holds and return the entry with the largest magnitude.
  * Each 6-byte DATAX0 read pops one entry (the part requires the full
  * six-byte read per entry, and 5 us between reads, which the I2C overhead
- * covers). An empty FIFO still reads the latest sample from the data
- * registers, so the caller always gets a value.
+ * covers).
+ *
+ * An empty FIFO is not read at all: the data registers are then being written
+ * by the part, and a read that straddles the update returns bytes from two
+ * conversions. The caller gets the last good sample instead, which is at most
+ * one tick old. Out-of-range samples are dropped the same way.
  */
 int adxl375_read_peak(int16_t *x, int16_t *y, int16_t *z)
 {
@@ -233,14 +254,12 @@ int adxl375_read_peak(int16_t *x, int16_t *y, int16_t *z)
 	if (n >= FIFO_DEPTH) {
 		fifo_overruns++;
 	}
-	if (n == 0) {
-		n = 1;
-	} else if (n > MAX_POP_PER_TICK) {
+	if (n > MAX_POP_PER_TICK) {
 		n = MAX_POP_PER_TICK;
 	}
 
 	uint16_t best = 0;
-	int16_t bx = 0, by = 0, bz = 0;
+	bool got = false;
 
 	for (uint8_t i = 0; i < n; i++) {
 		int16_t sx, sy, sz;
@@ -249,19 +268,28 @@ int adxl375_read_peak(int16_t *x, int16_t *y, int16_t *z)
 		if (err) {
 			return err;
 		}
+		if (sx < -SAMPLE_LSB_MAX || sx > SAMPLE_LSB_MAX ||
+		    sy < -SAMPLE_LSB_MAX || sy > SAMPLE_LSB_MAX ||
+		    sz < -SAMPLE_LSB_MAX || sz > SAMPLE_LSB_MAX) {
+			bad_samples++;
+			continue;
+		}
 		uint16_t mag = punch_hg_mag(sx, sy, sz);
 
-		if (i == 0 || mag > best) {
+		if (!got || mag > best) {
+			got = true;
 			best = mag;
-			bx = sx; by = sy; bz = sz;
+			last_x = sx; last_y = sy; last_z = sz;
 		}
 	}
-	*x = bx; *y = by; *z = bz;
+	*x = last_x; *y = last_y; *z = last_z;
 	return 0;
 }
 
-void adxl375_fifo_stats(uint32_t *overruns, uint8_t *peak_entries)
+void adxl375_fifo_stats(uint32_t *overruns, uint8_t *peak_entries,
+			uint32_t *bad)
 {
 	*overruns = fifo_overruns;
 	*peak_entries = fifo_peak_entries;
+	*bad = bad_samples;
 }

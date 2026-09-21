@@ -34,9 +34,10 @@ three axes of that one tick, so direction survives). The impact peak the
 detector saw is still `event_packet.peak_hg`.
 
 Within a tick, `hg_*` is itself the hardest of the ADXL375 FIFO entries since
-the previous tick: the part samples at 1600 Hz into its FIFO and the 1 kHz loop
-drains it. The same holds for `raw_sample.hg*`, so a raw capture is exactly the
-detector's input.
+the previous tick: the part samples at 800 Hz into its FIFO and the 1 kHz loop
+drains it, repeating the last sample on a tick that found nothing new. The
+same holds for `raw_sample.hg*`, so a raw capture is exactly the detector's
+input.
 
 ### event_packet (28 B)
 ```

@@ -88,13 +88,14 @@ struct __packed status_packet {
 	uint16_t events;
 };
 
-/* adxl375.c — high-g impact accelerometer, raw LSB out. The part samples
- * faster than the loop and buffers in its FIFO; adxl375_read_peak() pops
- * everything since the last tick and returns the hardest entry, so a 1 ms
- * impact is not missed between two loop ticks. */
+/* adxl375.c — high-g impact accelerometer, raw LSB out. The part buffers in
+ * its FIFO; adxl375_read_peak() pops everything since the last tick and
+ * returns the hardest entry (the last good sample if nothing new arrived),
+ * so no sample is skipped between two loop ticks. */
 int adxl375_init(void);
 int adxl375_read_peak(int16_t *x, int16_t *y, int16_t *z);
-void adxl375_fifo_stats(uint32_t *overruns, uint8_t *peak_entries);
+void adxl375_fifo_stats(uint32_t *overruns, uint8_t *peak_entries,
+			uint32_t *bad);
 /* Liveness: the part streams zeros in standby, which is indistinguishable
  * from a still glove. Checked at 1 Hz; re-initialises if found asleep. */
 int adxl375_health(bool *measuring);

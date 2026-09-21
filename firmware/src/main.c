@@ -395,10 +395,13 @@ static int cmd_hg(const struct shell *sh, size_t argc, char **argv)
 	 * means entries were dropped; raise MAX_POP_PER_TICK or lower the ODR. */
 	uint32_t overruns = 0;
 	uint8_t peak_entries = 0;
+	uint32_t bad = 0;
 
-	adxl375_fifo_stats(&overruns, &peak_entries);
+	adxl375_fifo_stats(&overruns, &peak_entries, &bad);
 	shell_print(sh, "fifo: peak %u entries waiting, %u overruns, loop %u Hz",
 		    peak_entries, overruns, measured_hz);
+	/* anything but 0 here is the I2C link returning garbage */
+	shell_print(sh, "out-of-range samples dropped: %u", bad);
 	if (!measuring) {
 		shell_warn(sh, "high-g is the punch start trigger — "
 			       "detection does nothing while it reads zero");
