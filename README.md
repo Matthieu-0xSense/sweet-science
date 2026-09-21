@@ -122,7 +122,8 @@ logs/               created at runtime, not tracked
 ```
 
 Hardware: 2x Adafruit Feather nRF52840 Sense, 2x ADXL375 (+/-200 g), 4x
-FlexiForce A201 (two per glove), 47 kOhm divider resistors, LiPo per node.
+FlexiForce A201 (two per glove), 47 kOhm divider resistors, LiPo per node,
+one momentary push button per node (D6 to D5) for on/off.
 
 ## Quick start — no hardware needed
 
@@ -359,7 +360,7 @@ Build and flash:
 
 ```
 west build -b adafruit_feather_nrf52840/nrf52840/sense/uf2 firmware
-# double-tap RESET -> FTHR840BOOT drive appears -> copy the uf2:
+# double-tap RESET (or `dfu` on the USB shell) -> FTHRSNSBOOT drive appears -> copy the uf2:
 copy build\zephyr\zephyr.uf2 E:\
 ```
 
@@ -411,8 +412,21 @@ pyocd gdbserver -t nrf52840    # step debug
   on later Feather Sense revisions) — same register map and sensitivities.
 - `dfu` shell command reboots into the UF2 bootloader (GPREGRET magic 0x57),
   so reflashing needs no physical double-tap on RESET.
-- the red LED (D13, `led0`) blinks 50 ms every 2 s while the node is powered,
-  so the EN switch state is visible through the strap. Solid would cost ~2 mA
+- **On/off is a momentary button between D6 (P0.07) and D5 (P1.08), not a
+  switch on EN.** D5 is driven low as the button's return because the header
+  has one GND pin and the FSR dividers already own it; real GND works too.
+  Hold 1 s while running: the LED goes solid, let go and the node
+  enters nRF System OFF. Press again to wake (a full reset). USB plug-in and
+  RESET also wake it; the `off` shell command takes the same path for bench
+  use. Before a strap button is wired, point the `pwrbtn` alias in the
+  overlay at `&button0` (the on-board switch). Off draw is ~70-100 uA — the
+  3.3 V regulator stays up, the ADXL375 and LSM6DS33 are put to
+  standby/power-down first — against 0 uA for a switch on EN; months on a
+  400 mAh pack. `src/power.c` has the two gotchas (the wake is a reset with
+  the finger still on the button; System OFF with SENSE already true wakes
+  immediately).
+- the red LED (D13, `led0`) blinks 50 ms every 2 s while the node is running,
+  so the on/off state is visible through the strap. Solid would cost ~2 mA
   (15-20 % of the node's draw); the blink averages ~50 uA.
 - `fsr [samples]` prints raw SAADC counts and mV for both channels at 10 Hz.
   Otherwise the counts only surface inside an event packet, which needs a

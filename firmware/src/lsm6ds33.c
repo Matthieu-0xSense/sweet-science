@@ -73,6 +73,14 @@ int lsm6ds33_init(void)
 	return 0;
 }
 
+/* ODR 0 on both blocks = power-down, ~3 uA. Same reason as adxl375_standby():
+ * the rail stays up through System OFF. */
+int lsm6ds33_power_down(void)
+{
+	i2c_reg_write_byte(i2c, LSM6_ADDR, REG_CTRL1_XL, 0x00);
+	return i2c_reg_write_byte(i2c, LSM6_ADDR, REG_CTRL2_G, 0x00);
+}
+
 int lsm6ds33_read(int16_t *a, int16_t *g)
 {
 	uint8_t b[12];

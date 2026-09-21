@@ -9,6 +9,10 @@
  * FlexiForce A201 dividers: A0 = P0.04 = AIN2, A1 = P0.05 = AIN3.
  * Battery sense: the board wires VBAT through a 100k/100k divider to
  * P0.29 = AIN5 (see vbatt node in the board dtsi).
+ * Power button: momentary, between D6 = P0.07 and D5 = P1.08, internal
+ * pull-up on D6. D5 is driven low as the button's return — the header has a
+ * single GND pin and the FSR dividers already own it. Any real GND works too.
+ * EN is left unconnected (src/power.c does the on/off latching).
  */
 
 #include <zephyr/dt-bindings/adc/adc.h>
@@ -25,6 +29,23 @@
 	zephyr,user {
 		io-channels = <&adc 2>, <&adc 3>, <&adc 5>;
 		io-channel-names = "fsr0", "fsr1", "vbat";
+		/* button return: held low by power.c, retained through System OFF */
+		pwrgnd-gpios = <&gpio1 8 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* Point the alias at &button0 (the on-board switch, P1.02) to try the
+	 * hold-to-off / press-to-wake path before a strap button is wired. */
+	aliases {
+		pwrbtn = &pwr_button;
+	};
+
+	strap_buttons {
+		compatible = "gpio-keys";
+
+		pwr_button: pwr_button {
+			gpios = <&gpio0 7 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "Strap power button (D6)";
+		};
 	};
 };
 

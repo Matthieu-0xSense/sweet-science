@@ -155,6 +155,16 @@ int adxl375_init(void)
 }
 
 /*
+ * Standby before System OFF: ~0.1 uA against ~145 uA measuring. The part
+ * keeps its supply in System OFF (the 3.3 V rail stays up), so whatever
+ * state it is left in is what it draws until the next wake.
+ */
+int adxl375_standby(void)
+{
+	return i2c_reg_write_byte(i2c, ADXL375_ADDR, REG_POWER_CTL, 0x00);
+}
+
+/*
  * Cheap 1 Hz liveness check: one register read, and a reconfigure without
  * sleeping if the part is found asleep. Standby produces a stream of zeros
  * that looks exactly like a node nobody is wearing, so this is the only thing

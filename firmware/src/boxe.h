@@ -99,10 +99,22 @@ void adxl375_fifo_stats(uint32_t *overruns, uint8_t *peak_entries);
  * from a still glove. Checked at 1 Hz; re-initialises if found asleep. */
 int adxl375_health(bool *measuring);
 uint32_t adxl375_recoveries(void);
+int adxl375_standby(void);
 
 /* lsm6ds33.c — on-board accel/gyro, mg and dps x10 out */
 int lsm6ds33_init(void);
 int lsm6ds33_read(int16_t *a, int16_t *g);
+int lsm6ds33_power_down(void);
+
+/* main.c — stop the sample/status/LED timers and leave the LED off, so a
+ * System OFF entry does not race the pipeline for the I2C bus or freeze the
+ * LED on (GPIO state is retained through System OFF: a lit LED would cost
+ * 2 mA for the whole "off" period). */
+void pipeline_stop(void);
+
+/* power.c — momentary button as an on/off toggle via nRF System OFF.
+ * Hold to power off; the same pin's GPIO SENSE wakes (resets) the chip. */
+int power_button_init(void);
 
 /* punch_detect.c — fed at SAMPLE_HZ from the sampling loop */
 uint16_t punch_hg_mag(int16_t x, int16_t y, int16_t z);

@@ -9,5 +9,6 @@ target_sources(app PRIVATE
   src/ble_service.c
   src/adxl375.c
   src/lsm6ds33.c
+  src/power.c
 )
 target_include_directories(app PRIVATE src)

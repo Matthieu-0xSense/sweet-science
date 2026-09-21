@@ -39,8 +39,8 @@ static const struct adc_dt_spec vbat =
 	ADC_DT_SPEC_GET_BY_NAME(DT_PATH(zephyr_user), vbat);
 
 /*
- * Red LED (D13, P1.09): a 50 ms blink every 2 s while the node is powered, so
- * the EN switch state is visible through the strap. Solid would cost ~2 mA,
+ * Red LED (D13, P1.09): a 50 ms blink every 2 s while the node is running, so
+ * the on/off state is visible through the strap. Solid would cost ~2 mA,
  * 15-20 % of the node's draw on a 200 mAh pack; the blink averages ~50 uA.
  * Both timers run in ISR context; the nRF GPIO driver is safe to call there.
  */
@@ -244,6 +244,15 @@ static void status_tick(struct k_timer *timer)
 }
 K_TIMER_DEFINE(status_timer, status_tick, NULL);
 
+void pipeline_stop(void)
+{
+	k_timer_stop(&sample_timer);
+	k_timer_stop(&status_timer);
+	k_timer_stop(&led_blink_timer);
+	k_timer_stop(&led_off_timer);
+	(void)gpio_pin_set_dt(&led_on, 0);
+}
+
 int main(void)
 {
 	LOG_INF("Boxe_AI node %s boot", NODE_NAME);
@@ -278,6 +287,10 @@ int main(void)
 
 	k_timer_start(&sample_timer, K_MSEC(1), K_USEC(1000000 / SAMPLE_HZ));
 	k_timer_start(&status_timer, K_SECONDS(1), K_SECONDS(1));
+
+	/* after the pipeline: a hold detected before this point would race
+	 * the timers it stops */
+	(void)power_button_init();
 
 	LOG_INF("pipeline running at %d Hz", SAMPLE_HZ);
 	return 0;
