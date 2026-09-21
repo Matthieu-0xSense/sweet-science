@@ -64,6 +64,11 @@ nodes: 597 k IMU samples, 6 k status packets, 806 events, no drops.
   never fitted to real punches. The 2026-09-01 events show it: `peak_g` of
   3-5 g on events that fired, contact widths of 400 ms. That is a desk and a
   loose glove, not a punch. Every downstream metric inherits this.
+- **The first real hits on record are in `session_20260918_160344`** (right
+  glove, hand inside): 51, 94 and 74 g with contact, 130-280 ms wide. The
+  same log has 200 other events at 2-4 g with contact — hand moving in the
+  glove, one every 0.55 s — which is what drove the detector change below.
+  Three hits is not a fit.
 - **Force is uncalibrated.** `force_n` is `null` in every record captured so
   far. The conductance regression and `calibrate_fsr.py` exist and the algebra
   is exact; the procedure has simply never been run with a scale and a puck.
@@ -81,12 +86,11 @@ Roughly in the order it blocks the next thing.
    holds at hand temperature (0.36 %/degC drift).
 3. **Ground-truth validation.** One session, hand-counted and filmed, against
    `metrics.py` output. Anything that disagrees is a bug or a bad metric.
-4. **Fix the baseline latch** in `punch_detect.c` — it only tracks the FSR
-   baseline in `IDLE`, so a resting glove preload above `PUNCH_FSR_CONTACT`
-   latches contact on, which stops the state machine returning to `IDLE`,
-   which stops the baseline tracking. Self-sustaining, and it fails exactly
-   when the sensor goes into a glove. `sweep.py` can score the fix
-   (`--baseline-mode always`) against real data before anyone edits the C.
+4. **Contact width.** Landed punches still run to the window cap on some
+   events: the glove settles at a higher preload after impact and the FSR
+   never falls back under `PUNCH_CONTACT_END_PCT` of its peak. Whether that
+   is a pushed punch or a glove artefact needs bag data; `sweep.py` sweeps
+   the percentage.
 5. **Hand strap.** Left/right identity is a build flag (`CONFIG_BOXE_HAND_R`),
    so the two nodes carry different images. A GPIO strap read at boot would
    make them interchangeable.
@@ -177,12 +181,78 @@ The fix is to record the full-rate stream once and sweep offline.
 
 ```
 python boxe_host.py --ble --raw     # writes logs/raw_L_*.bin, raw_R_*.bin
-python mark.py                      # someone else presses Enter per punch
+python mark.py --stance orthodox    # someone else presses a key per punch
 python sweep.py ../logs/raw_L_*.bin --labels ../logs/labels_*.txt
 ```
 
-`sweep.py` prints a ranked table and a `#define` block to paste into
-`boxe.h`. Then reflash and re-record to confirm.
+`sweep.py` prints a ranked table (precision, recall, F1, `hit_acc` = how
+often the contact flag agrees with the label) and a `#define` block to paste
+into `boxe.h`. Then reflash and re-record to confirm.
+
+### Recording protocol
+
+The labels are what turn a recording into a fit, and a timestamp alone
+cannot say afterwards which hand threw, what it was, or whether it landed.
+`mark.py` takes one key per punch, no Enter:
+
+```
+j c h u     landed jab / cross / hook / uppercut
+J C H U     the same, missed
+space / m   landed / missed, type unknown
+l / r       hand for what follows (--hand sets the start; --stance orthodox
+            makes jab=L and cross=R on their own)
+s           sync mark
+x           undo
+```
+
+and writes `<host time> <hand> <type> <hit|miss>` per line. `sweep.py` keeps
+only the capture's own hand, so both nodes can be fitted from one file.
+
+A session that yields something:
+
+1. **Phone filming, nodes on, host running with `--raw`.** Start `mark.py`.
+2. **Sync clap**: tap the two gloves together once in front of the camera,
+   press `s` at the same time. One impact on both nodes, one frame on the
+   video, one line in the labels — that is what lines the three clocks up
+   afterwards, including the L/R offset that combo timing needs.
+3. **Structured rounds** before free ones: a round of jabs only, a round of
+   crosses only, then hooks, then free. The type label comes from the round
+   and the labeller only has to press hit/miss, and the classifier gets
+   clean classes for nothing.
+4. **Some deliberate misses** (shadow, air) and **some glove-on / clench /
+   push** moments with no punch, so `hit_acc` and the press rejection have
+   something to score against.
+5. **Nodes stay on through the rest** — the idle stretches are what the
+   false-positive rate is measured on.
+6. `rawlog.py stats` on both captures before anyone fits anything: a capture
+   with holes fits the holes.
+
+Whoever presses the keys is not the boxer. Their reaction time comes out as
+`lag_ms`, and the sync clap gives that lag with no swing in front of it.
+
+Two rules changed on the evidence of the captures, without a fit:
+
+- **Only high-g opens an event** (`PUNCH_OPEN_ON_HG`). Every capture with a
+  hand in the glove showed the FSR opening events on its own: the preload
+  wanders by hundreds of counts with each clench, an event opens, stays
+  active to the window cap because the baseline is frozen in `ACTIVE`, and
+  the next opens as soon as `REFRACT` ends — one event every 0.55 s, at
+  2-4 g, for minutes. Replayed over all 32 captures the change takes the
+  event count from thousands to tens, and what is left has the high-g
+  signature. A thrown punch, landed or not, always has one, so nothing worth
+  counting is lost; what is lost is the "press" class, which `metrics.py`
+  discarded anyway.
+- **Contact ends** when the FSR falls under `PUNCH_CONTACT_END_PCT` of its
+  peak in the event, not when it drops all the way back to
+  `PUNCH_FSR_CONTACT` above a baseline that no longer applies. Widths on
+  real hits were 250-400 ms; foam contact is 20-50 ms.
+
+Two bugs fell out of the same replay. High-g impacts are 1-2 samples wide
+above 5 g (45 g one millisecond, 2.4 g the next), so the 3 ms confirmation
+now applies to FSR-opened runs only and high-g opens on its first sample.
+And the sample that opens an event was not part of it, which did not matter
+while the FSR opened events early but loses the whole punch when the impact
+spike is the opener — 45 g on the capture, 10 g in the event.
 
 One constant is already fitted this way: **`PUNCH_CONFIRM_MS` = 3** (mirrored
 as `confirm_ms` in `host/punch_detect.py`). An event used to open on a single
@@ -327,6 +397,16 @@ pyocd gdbserver -t nrf52840    # step debug
 - `f0`/`f1` in the IMU stream are **peak-held** over the ten 1 kHz ticks each
   100 Hz sample covers. A snapshot walks straight past a contact peak a few ms
   wide. This makes `imu_packet` 114 B rather than 94 B — fits, MTU is 247.
+  `hg_*` is held the same way since the FIFO change (hardest tick, all three
+  axes of it).
+- **The ADXL375 runs at 1600 Hz into its FIFO; the loop drains it each tick
+  and keeps the hardest entry.** At the old 800 Hz ODR the part's bandwidth
+  was 400 Hz, which smooths a 1-2 ms impact, and the one sample per tick
+  landed anywhere on the flank — the same punch read 20 % apart between
+  trials. 3200 Hz needs 3-4 six-byte I2C reads per tick and does not fit in
+  the 1 ms at 400 kHz alongside the SAADC and LSM6DS33; SPI would. `hg`
+  shell command prints the most FIFO entries ever found waiting and the
+  overrun count — near 32 means the loop ran late and entries were lost.
 - `lsm6ds33.c` accepts WHO_AM_I 0x69 (LSM6DS33) and 0x6A (LSM6DS3TR-C, fitted
   on later Feather Sense revisions) — same register map and sensitivities.
 - `dfu` shell command reboots into the UF2 bootloader (GPREGRET magic 0x57),

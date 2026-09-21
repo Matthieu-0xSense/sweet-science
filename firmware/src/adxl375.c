@@ -22,12 +22,44 @@ LOG_MODULE_DECLARE(boxe);
 #define REG_DATA_FORMAT     0x31
 #define REG_DATAX0          0x32
 #define REG_FIFO_CTL        0x38
+#define REG_FIFO_STATUS     0x39
 
 #define DEVID_ADXL375       0xE5
-#define BW_RATE_800HZ       0x0D   /* output data rate, 800 Hz */
 #define POWER_CTL_MEASURE   0x08
 #define DATA_FORMAT_INIT    0x0B   /* full resolution, right justified */
-#define FIFO_CTL_BYPASS     0x00
+#define FIFO_CTL_STREAM     0x80   /* stream mode: oldest entry dropped when full */
+#define FIFO_ENTRIES_MASK   0x3F
+#define FIFO_DEPTH          32
+
+/*
+ * Output data rate. The part's bandwidth is ODR/2, and a glove impact is a
+ * 1-2 ms pulse: at 800 Hz (400 Hz bandwidth) the pulse is smoothed and the
+ * one sample the 1 kHz loop took from it landed anywhere on the flank, so the
+ * same punch read 20 % apart from one trial to the next. At 1600 Hz the part
+ * writes 1.6 entries per loop tick into its FIFO and the tick pops all of
+ * them and keeps the hardest — the loop still runs at 1 kHz.
+ *
+ * 3200 Hz would be better again but costs 3-4 six-byte I2C reads per tick,
+ * ~0.7 ms at 400 kHz, on top of the SAADC and the LSM6DS33; the loop would
+ * miss ticks. Watch `loop_hz` in the status packet if you try it. SPI (the
+ * breakout supports it, 5 MHz) would make it free.
+ */
+#define ADXL375_ODR_HZ      1600
+#if ADXL375_ODR_HZ == 3200
+#define BW_RATE_CODE        0x0F
+#elif ADXL375_ODR_HZ == 1600
+#define BW_RATE_CODE        0x0E
+#elif ADXL375_ODR_HZ == 800
+#define BW_RATE_CODE        0x0D
+#else
+#error "ADXL375_ODR_HZ must be 800, 1600 or 3200"
+#endif
+
+/* Entries popped per tick at most. A stall (BLE, a log flush) lets the FIFO
+ * pile up; draining all 32 in one tick would stall the loop again, so the
+ * backlog is worked off over a few ticks instead — the peak is late by that
+ * many ms, not lost. */
+#define MAX_POP_PER_TICK    6
 
 static const struct device *const i2c = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 
@@ -49,6 +81,8 @@ static const struct device *const i2c = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 #define INIT_RETRY_MS       5
 
 static uint32_t recoveries;
+static uint32_t fifo_overruns;      /* ticks that found the FIFO full */
+static uint8_t fifo_peak_entries;   /* most entries seen waiting */
 
 /*
  * The register writes only, with no probe and no sleeping. Split out because
@@ -63,8 +97,8 @@ static int adxl375_configure(void)
 	/* Order matters: configure while standby, then enable measurement. */
 	i2c_reg_write_byte(i2c, ADXL375_ADDR, REG_POWER_CTL, 0x00);
 	i2c_reg_write_byte(i2c, ADXL375_ADDR, REG_DATA_FORMAT, DATA_FORMAT_INIT);
-	i2c_reg_write_byte(i2c, ADXL375_ADDR, REG_BW_RATE, BW_RATE_800HZ);
-	i2c_reg_write_byte(i2c, ADXL375_ADDR, REG_FIFO_CTL, FIFO_CTL_BYPASS);
+	i2c_reg_write_byte(i2c, ADXL375_ADDR, REG_BW_RATE, BW_RATE_CODE);
+	i2c_reg_write_byte(i2c, ADXL375_ADDR, REG_FIFO_CTL, FIFO_CTL_STREAM);
 	err = i2c_reg_write_byte(i2c, ADXL375_ADDR, REG_POWER_CTL,
 				 POWER_CTL_MEASURE);
 	if (err) {
@@ -84,7 +118,8 @@ static int adxl375_configure(void)
 		return err ? err : -EIO;
 	}
 
-	LOG_INF("adxl375: ready (800 Hz, +/-200 g, 49 mg/LSB)");
+	LOG_INF("adxl375: ready (%d Hz, FIFO stream, +/-200 g, 49 mg/LSB)",
+		ADXL375_ODR_HZ);
 	return 0;
 }
 
@@ -151,7 +186,7 @@ uint32_t adxl375_recoveries(void)
 	return recoveries;
 }
 
-int adxl375_read(int16_t *x, int16_t *y, int16_t *z)
+static int read_sample(int16_t *x, int16_t *y, int16_t *z)
 {
 	uint8_t b[6];
 	int err = i2c_burst_read(i2c, ADXL375_ADDR, REG_DATAX0, b, sizeof(b));
@@ -163,4 +198,60 @@ int adxl375_read(int16_t *x, int16_t *y, int16_t *z)
 	*y = (int16_t)((b[3] << 8) | b[2]);
 	*z = (int16_t)((b[5] << 8) | b[4]);
 	return 0;
+}
+
+/*
+ * Pop what the FIFO holds and return the entry with the largest magnitude.
+ * Each 6-byte DATAX0 read pops one entry (the part requires the full
+ * six-byte read per entry, and 5 us between reads, which the I2C overhead
+ * covers). An empty FIFO still reads the latest sample from the data
+ * registers, so the caller always gets a value.
+ */
+int adxl375_read_peak(int16_t *x, int16_t *y, int16_t *z)
+{
+	uint8_t st = 0;
+	int err = i2c_reg_read_byte(i2c, ADXL375_ADDR, REG_FIFO_STATUS, &st);
+
+	if (err) {
+		return err;
+	}
+	uint8_t n = st & FIFO_ENTRIES_MASK;
+
+	if (n > fifo_peak_entries) {
+		fifo_peak_entries = n;
+	}
+	if (n >= FIFO_DEPTH) {
+		fifo_overruns++;
+	}
+	if (n == 0) {
+		n = 1;
+	} else if (n > MAX_POP_PER_TICK) {
+		n = MAX_POP_PER_TICK;
+	}
+
+	uint16_t best = 0;
+	int16_t bx = 0, by = 0, bz = 0;
+
+	for (uint8_t i = 0; i < n; i++) {
+		int16_t sx, sy, sz;
+
+		err = read_sample(&sx, &sy, &sz);
+		if (err) {
+			return err;
+		}
+		uint16_t mag = punch_hg_mag(sx, sy, sz);
+
+		if (i == 0 || mag > best) {
+			best = mag;
+			bx = sx; by = sy; bz = sz;
+		}
+	}
+	*x = bx; *y = by; *z = bz;
+	return 0;
+}
+
+void adxl375_fifo_stats(uint32_t *overruns, uint8_t *peak_entries)
+{
+	*overruns = fifo_overruns;
+	*peak_entries = fifo_peak_entries;
 }

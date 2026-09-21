@@ -1,7 +1,7 @@
 /*
  * Boxe_AI wrist node — main sampling pipeline.
  *
- *   k_timer 1 kHz ─▶ sample work: SAADC read (FSR x2) + ADXL375 read
+ *   k_timer 1 kHz ─▶ sample work: SAADC read (FSR x2) + ADXL375 FIFO drain
  *                    ├─▶ punch_detect_feed()   (always, full rate)
  *                    └─▶ every IMU_DECIM ticks: LSM6DS33 read, batch into
  *                        imu_packet, notify when STREAM_BATCH full
@@ -69,8 +69,12 @@ static uint8_t stream_fill;
 static struct raw_packet raw_pkt;
 static uint8_t raw_fill;
 static uint32_t tick_count, dropped, event_count;
-/* peak-hold for the FSR channels across one decimation window */
+/* peak-hold across one decimation window: FSR channels, and the hardest
+ * high-g tick, so the 100 Hz stream shows the impact rather than the tick
+ * before or after it */
 static uint16_t fsr0_hold, fsr1_hold;
+static int16_t hg_hold[3];
+static uint16_t hg_hold_mag;
 static uint32_t ticks_this_second, measured_hz;
 static uint32_t hg_down_s;      /* seconds the ADXL375 was not measuring */
 
@@ -108,7 +112,14 @@ static void sample_fn(struct k_work *work)
 
 	/* --- ADXL375 (every tick — impact peaks are short) ----------- */
 	int16_t hgx = 0, hgy = 0, hgz = 0;
-	(void)adxl375_read(&hgx, &hgy, &hgz);
+	(void)adxl375_read_peak(&hgx, &hgy, &hgz);
+
+	uint16_t hg_mag = punch_hg_mag(hgx, hgy, hgz);
+
+	if (hg_mag > hg_hold_mag) {
+		hg_hold_mag = hg_mag;
+		hg_hold[0] = hgx; hg_hold[1] = hgy; hg_hold[2] = hgz;
+	}
 
 	punch_detect_feed(t_us, raw0, raw1, hgx, hgy, hgz);
 
@@ -156,9 +167,10 @@ static void sample_fn(struct k_work *work)
 
 		s->ax = a[0]; s->ay = a[1]; s->az = a[2];
 		s->gx = g[0]; s->gy = g[1]; s->gz = g[2];
-		s->hgx = hgx; s->hgy = hgy; s->hgz = hgz;
+		s->hgx = hg_hold[0]; s->hgy = hg_hold[1]; s->hgz = hg_hold[2];
 		s->f0 = fsr0_hold; s->f1 = fsr1_hold;
 		fsr0_hold = 0; fsr1_hold = 0;
+		hg_hold_mag = 0;
 
 		if (++stream_fill == STREAM_BATCH) {
 			stream_fill = 0;
@@ -364,6 +376,16 @@ static int cmd_hg(const struct shell *sh, size_t argc, char **argv)
 		    err ? " (i2c error)" : "");
 	shell_print(sh, "recoveries: %u", adxl375_recoveries());
 	shell_print(sh, "seconds down: %u", hg_down_s);
+
+	/* FIFO headroom: the loop pops the FIFO every tick, so the most
+	 * entries ever found waiting says how late the loop has run. Near 32
+	 * means entries were dropped; raise MAX_POP_PER_TICK or lower the ODR. */
+	uint32_t overruns = 0;
+	uint8_t peak_entries = 0;
+
+	adxl375_fifo_stats(&overruns, &peak_entries);
+	shell_print(sh, "fifo: peak %u entries waiting, %u overruns, loop %u Hz",
+		    peak_entries, overruns, measured_hz);
 	if (!measuring) {
 		shell_warn(sh, "high-g is the punch start trigger — "
 			       "detection does nothing while it reads zero");
@@ -373,7 +395,7 @@ static int cmd_hg(const struct shell *sh, size_t argc, char **argv)
 	for (uint32_t i = 0; i < n; i++) {
 		int16_t x = 0, y = 0, z = 0;
 
-		if (adxl375_read(&x, &y, &z) != 0) {
+		if (adxl375_read_peak(&x, &y, &z) != 0) {
 			shell_error(sh, "read failed");
 			return 0;
 		}

@@ -1,11 +1,13 @@
 /*
  * Punch detection state machine. Fed at SAMPLE_HZ, pops event packets.
  *
- * States: IDLE -> ACTIVE (hg magnitude above start threshold or FSR
- * contact) -> collect peaks/impulse until quiet for PUNCH_WINDOW_MS ->
- * emit event -> REFRACTORY.
+ * States: IDLE -> ACTIVE (hg magnitude above start threshold; with
+ * PUNCH_OPEN_ON_HG=0 also on FSR contact) -> collect peaks/impulse until
+ * quiet for 30 ms or PUNCH_WINDOW_MS is up -> emit event -> REFRACTORY.
  *
- * All thresholds in boxe.h — tune against real data during calibration.
+ * All thresholds in boxe.h — fitted offline with host/sweep.py, which
+ * replays host/punch_detect.py, a line-by-line port of this file. Change
+ * one, change the other.
  */
 
 #include <zephyr/kernel.h>
@@ -35,7 +37,7 @@ static struct {
 static struct event_packet pending;
 static bool pending_valid;
 
-static uint16_t hg_mag(int16_t x, int16_t y, int16_t z)
+uint16_t punch_hg_mag(int16_t x, int16_t y, int16_t z)
 {
 	/* cheap magnitude approx: max + half min of |components| —
 	 * avoids sqrt in the hot path, good enough for thresholding */
@@ -48,7 +50,7 @@ static uint16_t hg_mag(int16_t x, int16_t y, int16_t z)
 void punch_detect_feed(uint32_t t_us, uint16_t f0, uint16_t f1,
 		       int16_t hgx, int16_t hgy, int16_t hgz)
 {
-	uint16_t mag = hg_mag(hgx, hgy, hgz);
+	uint16_t mag = punch_hg_mag(hgx, hgy, hgz);
 
 	/*
 	 * Seed the baseline from the first sample instead of walking up from
@@ -85,44 +87,79 @@ void punch_detect_feed(uint32_t t_us, uint16_t f0, uint16_t f1,
 
 	uint16_t f0_rel = f0 > d.f0_base ? f0 - d.f0_base : 0;
 	uint16_t f1_rel = f1 > d.f1_base ? f1 - d.f1_base : 0;
-	bool contact_now = (f0_rel > PUNCH_FSR_CONTACT) ||
-			   (f1_rel > PUNCH_FSR_CONTACT);
-	bool active_now = (mag > PUNCH_HG_START_LSB) || contact_now;
+	bool pressed = (f0_rel > PUNCH_FSR_CONTACT) ||
+		       (f1_rel > PUNCH_FSR_CONTACT);
+	/*
+	 * Once contact has begun it only counts as continuing while the FSR
+	 * stays above PUNCH_CONTACT_END_PCT of the event's peak. A glove that
+	 * settles at a higher preload after the impact is not a fist still on
+	 * the bag; without this, every landed punch ran to the window cap
+	 * (250-400 ms widths on real hits; foam contact is 20-50 ms).
+	 */
+	bool contact_now = pressed;
+	if (pressed && d.st == ACTIVE && d.contact && PUNCH_CONTACT_END_PCT) {
+		uint32_t hold = (uint32_t)MAX(d.f0_peak, d.f1_peak) *
+				PUNCH_CONTACT_END_PCT / 100;
+		if (hold < PUNCH_FSR_CONTACT) hold = PUNCH_FSR_CONTACT;
+		contact_now = (f0_rel > hold) || (f1_rel > hold);
+	}
+	bool swing = mag > PUNCH_HG_START_LSB;
+	/*
+	 * Only high-g opens an event. Every session with a hand in the glove
+	 * showed why the FSR must not: the resting preload wanders by hundreds
+	 * of counts with each clench and wrist movement, so the FSR opened an
+	 * event, held it active to the window cap, and the baseline (frozen in
+	 * ACTIVE) never caught up — one event every window+refract, 0.55 s,
+	 * for minutes, at 2-4 g, which is a hand moving and no punch. A thrown
+	 * punch, landed or not, always carries the high-g signature, so
+	 * nothing worth counting is lost.
+	 */
+	bool open_now = PUNCH_OPEN_ON_HG ? swing : (swing || contact_now);
+	bool active_now = swing || contact_now;
 
 	switch (d.st) {
 	case IDLE:
 		/*
-		 * Require PUNCH_CONFIRM_MS of uninterrupted activity before
-		 * opening an event. One sample used to be enough, and on a
-		 * gloved node on USB that fired ~1 event/s with nothing moving:
-		 * the FSR line carries ~130 counts p-p of 50 Hz hum plus 1-2 ms
+		 * An FSR-opened run needs PUNCH_CONFIRM_MS of uninterrupted
+		 * contact. One sample used to be enough, and on a gloved node
+		 * on USB that fired ~1 event/s with nothing moving: the FSR
+		 * line carries ~130 counts p-p of 50 Hz hum plus 1-2 ms
 		 * spikes, and a spike on a hum crest clears PUNCH_FSR_CONTACT
 		 * for exactly one or two samples. Replayed over the raw
 		 * captures, 3 ms removes every such event and keeps the real
-		 * punches; 5 ms starts eating them. Mirrored in
-		 * host/punch_detect.py (confirm_ms) — change both.
+		 * punches; 5 ms starts eating them.
+		 *
+		 * High-g has no such impostor and opens on its first sample:
+		 * on the captures a real impact is 1-2 samples wide above 5 g
+		 * (45 g one sample, 2.4 g the next), so waiting for a third
+		 * would drop most of them.
 		 */
-		if (!active_now) {
+		if (!open_now) {
 			d.run = 0;
 			break;
 		}
 		if (d.run == 0) {
 			d.run_start_us = t_us;
 		}
-		if (++d.run >= PUNCH_CONFIRM_MS * (SAMPLE_HZ / 1000)) {
-			d.run = 0;
-			d.peak_hg = 0;
-			d.f0_peak = d.f1_peak = 0;
-			d.impulse = 0;
-			d.contact = false;
-			d.contact_start_us = d.contact_end_us = 0;
-			d.st = ACTIVE;
-			/* onset = first sample of the confirmed run, so exec_ms
-			 * is not shortened by the confirmation delay */
-			d.t_start_us = d.run_start_us;
-			d.t_last_active_us = t_us;
+		d.run++;
+		if (d.run < (swing ? 1 : PUNCH_CONFIRM_MS * (SAMPLE_HZ / 1000))) {
+			break;
 		}
-		break;
+		d.run = 0;
+		d.peak_hg = 0;
+		d.f0_peak = d.f1_peak = 0;
+		d.impulse = 0;
+		d.contact = false;
+		d.contact_start_us = d.contact_end_us = 0;
+		d.st = ACTIVE;
+		/* onset = first sample of the confirmed run, so exec_ms
+		 * is not shortened by the confirmation delay */
+		d.t_start_us = d.run_start_us;
+		d.t_last_active_us = t_us;
+		/* fall through: the sample that opened the event is part of
+		 * it. Skipping it lost the whole punch when the impact spike
+		 * was the opener — 45 g on the capture, 10 g in the event. */
+		__fallthrough;
 
 	case ACTIVE:
 		if (mag > d.peak_hg) d.peak_hg = mag;
@@ -135,6 +172,8 @@ void punch_detect_feed(uint32_t t_us, uint16_t f0, uint16_t f1,
 				d.t_contact_us = t_us;
 			}
 			d.contact_end_us = t_us;
+		}
+		if (pressed) {
 			d.impulse += (f0_rel + f1_rel) / (SAMPLE_HZ / 1000);
 		}
 		if (active_now) d.t_last_active_us = t_us;

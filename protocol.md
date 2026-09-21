@@ -23,14 +23,20 @@ u32  t_us_base            timestamp of first sample (node clock, µs)
 5 × {
   i16 ax, ay, az          LSM6DS33/DS3TR-C, mg
   i16 gx, gy, gz          LSM6DS33/DS3TR-C, dps x10 (+/-2000 dps fits int16)
-  i16 hg_x, hg_y, hg_z    ADXL375, raw LSB (49 mg/LSB)
+  i16 hg_x, hg_y, hg_z    ADXL375, raw LSB (49 mg/LSB), peak-held
   u16 f0, f1              FSR ADC counts (0..4095), peak-held
 }
 ```
 `f0`/`f1` are the **maximum** over the ten 1 kHz ticks the stream sample covers,
 not a snapshot: a contact peak is a few ms wide and a 100 Hz snapshot walks past
-it. `hg_*` remains a snapshot — the true impact peak is in `event_packet.peak_hg`,
-computed at the full 1 kHz.
+it. `hg_*` is the tick with the **largest magnitude** in the same window (the
+three axes of that one tick, so direction survives). The impact peak the
+detector saw is still `event_packet.peak_hg`.
+
+Within a tick, `hg_*` is itself the hardest of the ADXL375 FIFO entries since
+the previous tick: the part samples at 1600 Hz into its FIFO and the 1 kHz loop
+drains it. The same holds for `raw_sample.hg*`, so a raw capture is exactly the
+detector's input.
 
 ### event_packet (28 B)
 ```

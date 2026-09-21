@@ -16,12 +16,19 @@
 #define PUNCH_FSR_CONTACT    150    /* ADC counts above baseline */
 #define PUNCH_WINDOW_MS      400
 #define PUNCH_REFRACT_MS     150
-#define PUNCH_CONFIRM_MS     3      /* sustained activity needed to open an event */
+#define PUNCH_CONFIRM_MS     3      /* sustained FSR contact needed to open an event */
+#define PUNCH_OPEN_ON_HG     1      /* 1: only high-g opens an event; the FSR is
+				     * read inside it for contact. 0: FSR contact
+				     * opens one too (original rule) */
+#define PUNCH_CONTACT_END_PCT 50    /* contact is over once the FSR falls below
+				     * this share of its peak in the event; 0
+				     * keeps it while f_rel > PUNCH_FSR_CONTACT */
 
 struct __packed imu_sample {
 	int16_t ax, ay, az;         /* LSM6DS33, mg */
 	int16_t gx, gy, gz;         /* dps x10 (+/-2000 dps fits int16) */
-	int16_t hgx, hgy, hgz;      /* ADXL375 raw LSB, 49 mg/LSB */
+	int16_t hgx, hgy, hgz;      /* ADXL375 raw LSB, 49 mg/LSB — the hardest
+				     * tick of the decimation window, same reason */
 	uint16_t f0, f1;            /* FSR ADC counts, peak over the decimation
 				     * window — a plain snapshot at 100 Hz walks
 				     * straight past a contact peak a few ms wide */
@@ -61,7 +68,8 @@ struct __packed event_packet {
  * through, so a gap is visible in the capture instead of silently closing up.
  */
 struct __packed raw_sample {
-	int16_t hgx, hgy, hgz;      /* ADXL375 raw LSB, 49 mg/LSB */
+	int16_t hgx, hgy, hgz;      /* ADXL375 raw LSB, 49 mg/LSB: the hardest
+				     * FIFO entry of the tick, what the detector saw */
 	uint16_t f0, f1;            /* FSR ADC counts, no peak-hold, no filter */
 };
 
@@ -80,9 +88,13 @@ struct __packed status_packet {
 	uint16_t events;
 };
 
-/* adxl375.c — high-g impact accelerometer, raw LSB out */
+/* adxl375.c — high-g impact accelerometer, raw LSB out. The part samples
+ * faster than the loop and buffers in its FIFO; adxl375_read_peak() pops
+ * everything since the last tick and returns the hardest entry, so a 1 ms
+ * impact is not missed between two loop ticks. */
 int adxl375_init(void);
-int adxl375_read(int16_t *x, int16_t *y, int16_t *z);
+int adxl375_read_peak(int16_t *x, int16_t *y, int16_t *z);
+void adxl375_fifo_stats(uint32_t *overruns, uint8_t *peak_entries);
 /* Liveness: the part streams zeros in standby, which is indistinguishable
  * from a still glove. Checked at 1 Hz; re-initialises if found asleep. */
 int adxl375_health(bool *measuring);
@@ -93,6 +105,7 @@ int lsm6ds33_init(void);
 int lsm6ds33_read(int16_t *a, int16_t *g);
 
 /* punch_detect.c — fed at SAMPLE_HZ from the sampling loop */
+uint16_t punch_hg_mag(int16_t x, int16_t y, int16_t z);
 void punch_detect_feed(uint32_t t_us, uint16_t f0, uint16_t f1,
 		       int16_t hgx, int16_t hgy, int16_t hgz);
 bool punch_detect_pop(struct event_packet *out);

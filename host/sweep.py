@@ -8,7 +8,7 @@ candidate on one recording.
 
     # 1. record, with the punches counted by hand as you throw them
     python boxe_host.py --ble --raw          # writes logs/raw_L_*.bin
-    python mark.py                           # Enter per punch -> labels file
+    python mark.py --hand R                  # one key per punch -> labels
 
     # 2. fit
     python sweep.py ../logs/raw_L_*.bin --labels ../logs/labels_*.txt
@@ -17,10 +17,12 @@ candidate on one recording.
 
 Scoring needs ground truth. Two kinds, in order of usefulness:
 
-  --labels FILE   one host timestamp per punch. Detections are matched to
+  --labels FILE   from mark.py: time, hand, type, hit/miss per punch. Only
+                  this node's hand is scored. Detections are matched to
                   labels within --tol seconds; the score is F1, so a run that
                   fires twice per punch is punished as hard as one that misses
-                  punches. This is the one to use.
+                  punches. hit_acc is how often the detected contact flag
+                  agrees with the label. This is the one to use.
   --truth N       total punch count only. Scores |detected - N|, which cannot
                   tell a missed punch plus a false positive from a clean
                   result. Use it when a capture was not labelled.
@@ -38,6 +40,7 @@ import sys
 import time
 from pathlib import Path
 
+import mark
 import punch_detect
 import rawlog
 from punch_detect import Params, PunchDetector
@@ -45,13 +48,16 @@ from punch_detect import Params, PunchDetector
 # Deliberately coarse. A fine grid over a capture of 300 punches invites
 # fitting the noise; land in the right neighbourhood, then refine.
 GRID = {
-    "hg_start_lsb": [80, 120, 160, 200, 280, 400],   # 4 g .. 20 g
+    "hg_start_lsb": [40, 60, 80, 120, 160, 200, 280, 400],   # 2 g .. 20 g
     "fsr_contact": [100, 200, 300, 450, 600],
     "window_ms": [150, 250, 400],
     "refract_ms": [100, 150, 250],
     "quiet_ms": [30],
-    "baseline_mode": list(punch_detect.BASELINE_MODES),
+    "baseline_mode": ["idle_refract", "always"],
+    "open_on": ["hg"],
+    "contact_end_pct": [0, 50, 75],
 }
+STR_PARAMS = ("baseline_mode", "open_on")
 
 
 def parse_values(spec: str, cast=int):
@@ -66,26 +72,29 @@ def parse_values(spec: str, cast=int):
     return [cast(x.strip()) for x in spec.split(",") if x.strip()]
 
 
-def load_labels(path: Path):
-    times = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.split("#", 1)[0].strip()
-        if line:
-            times.append(float(line))
-    return sorted(times)
+def load_labels(path: Path, node: str):
+    """Labels for this node's hand, plus the sync marks.
+
+    mark.py writes hand, type and outcome per label; the capture knows which
+    hand it is, so the other hand's punches are dropped here rather than
+    counted as misses. Labels marked '?' (or the old timestamp-only format)
+    are kept for either node.
+    """
+    labels, syncs = mark.parse_labels(path)
+    mine = [x for x in labels if x["hand"] in (node, "?")]
+    return mine, syncs
 
 
-def score_against_labels(det_times, labels, tol):
-    """Greedy nearest match. Returns (tp, fp, fn, f1, median_offset).
+def match(det_times, times, tol):
+    """Greedy nearest match. Returns {label index: detection index}.
 
     Greedy is fine here because labels are seconds apart and tol is a fraction
     of a second; the optimal assignment and the greedy one agree unless the
     tolerance is set wider than the gap between punches.
     """
     used = [False] * len(det_times)
-    tp = 0
-    offsets = []
-    for lab in labels:
+    pairs = {}
+    for j, lab in enumerate(times):
         best, best_d = -1, tol
         for i, t in enumerate(det_times):
             if used[i]:
@@ -95,14 +104,30 @@ def score_against_labels(det_times, labels, tol):
                 best, best_d = i, d
         if best >= 0:
             used[best] = True
-            tp += 1
-            offsets.append(det_times[best] - lab)
+            pairs[j] = best
+    return pairs
+
+
+def score_against_labels(events, det_times, labels, tol):
+    """Returns tp, fp, fn, precision, recall, f1, median lag, contact accuracy.
+
+    Contact accuracy is the share of matched punches whose detected `contact`
+    flag agrees with the label's hit/miss — the hit-rate metric is only as
+    good as this number.
+    """
+    pairs = match(det_times, [x["t"] for x in labels], tol)
+    tp = len(pairs)
     fp = len(det_times) - tp
     fn = len(labels) - tp
     prec = tp / (tp + fp) if tp + fp else 0.0
     rec = tp / (tp + fn) if tp + fn else 0.0
     f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
-    return tp, fp, fn, f1, (statistics.median(offsets) if offsets else 0.0)
+    offsets = [det_times[i] - labels[j]["t"] for j, i in pairs.items()]
+    agree = sum(1 for j, i in pairs.items()
+                if events[i].contact == labels[j]["hit"])
+    hit_acc = agree / tp if tp else 0.0
+    return (tp, fp, fn, prec, rec, f1,
+            statistics.median(offsets) if offsets else 0.0, hit_acc)
 
 
 def plausibility(events):
@@ -160,20 +185,13 @@ def main():
     ap.add_argument("--top", type=int, default=15, help="rows to print")
     ap.add_argument("--json", type=Path, help="write the full ranking")
     for name, values in GRID.items():
-        if name == "baseline_mode":
-            ap.add_argument("--baseline-mode",
-                            default=",".join(punch_detect.BASELINE_MODES),
-                            help="comma-separated: "
-                                 + ", ".join(punch_detect.BASELINE_MODES))
-        else:
-            ap.add_argument(f"--{name.replace('_', '-')}",
-                            default=",".join(str(v) for v in values),
-                            help=f"default {values}")
+        ap.add_argument(f"--{name.replace('_', '-')}",
+                        default=",".join(str(v) for v in values),
+                        help=f"comma-separated, default {values}")
     args = ap.parse_args()
 
-    grid = {k: parse_values(getattr(args, k))
-            for k in GRID if k != "baseline_mode"}
-    grid["baseline_mode"] = [s.strip() for s in args.baseline_mode.split(",")]
+    grid = {k: parse_values(getattr(args, k), str if k in STR_PARAMS else int)
+            for k in GRID}
 
     reader = rawlog.RawReader(args.capture)
     print(f"[sweep] loading {args.capture.name}", flush=True)
@@ -206,13 +224,28 @@ def main():
     verify_port(samples_raw, samples)
     del samples_raw
 
-    labels = load_labels(args.labels) if args.labels else None
+    labels, syncs = (load_labels(args.labels, reader.node)
+                     if args.labels else (None, []))
     if labels:
-        print(f"[sweep] {len(labels)} labelled punches, tol {args.tol}s")
+        hits = sum(1 for x in labels if x["hit"])
+        print(f"[sweep] {len(labels)} labelled punches for node {reader.node} "
+              f"({hits} hit, {len(labels) - hits} miss), tol {args.tol}s")
     elif args.truth:
         print(f"[sweep] scoring against a count of {args.truth}")
+    elif args.labels:
+        print(f"[sweep] WARNING: {args.labels.name} has no labels for node "
+              f"{reader.node} — ranking by plausibility only")
     else:
         print("[sweep] no ground truth — ranking by plausibility only")
+    if syncs:
+        # The sync clap is an impact on both nodes and a keypress: with the
+        # firmware thresholds it should be detected, and its lag is the
+        # labeller's reaction time with no swing in front of it.
+        det = [offset + e.t_us / 1e6 for e in replay(samples, Params())]
+        pairs = match(det, syncs, 1.0)
+        lags = [round((det[i] - syncs[j]) * 1000) for j, i in pairs.items()]
+        print(f"[sweep] {len(syncs)} sync mark(s), {len(pairs)} detected"
+              + (f", lag {lags} ms" if lags else ""))
 
     keys = list(grid)
     combos = list(itertools.product(*(grid[k] for k in keys)))
@@ -234,10 +267,11 @@ def main():
                                 if events else 0.0)
 
         if labels:
-            tp, fp, fn, f1, off = score_against_labels(det_times, labels,
-                                                       args.tol)
-            row.update(tp=tp, fp=fp, fn=fn, f1=round(f1, 4),
-                       lag_ms=round(off * 1000, 1))
+            tp, fp, fn, prec, rec, f1, off, hit_acc = score_against_labels(
+                events, det_times, labels, args.tol)
+            row.update(tp=tp, fp=fp, fn=fn, prec=round(prec, 3),
+                       recall=round(rec, 3), f1=round(f1, 4),
+                       lag_ms=round(off * 1000, 1), hit_acc=round(hit_acc, 3))
             row["score"] = row["f1"]
         elif args.truth:
             row["count_err"] = abs(len(events) - args.truth)
@@ -255,10 +289,10 @@ def main():
     rows.sort(key=lambda r: (-r["score"], -r["plausibility"]))
 
     cols = ["hg_start_lsb", "fsr_contact", "window_ms", "refract_ms",
-            "baseline_mode", "events", "contact_pct", "median_peak_g",
-            "plausibility"]
+            "baseline_mode", "contact_end_pct", "events", "contact_pct",
+            "median_peak_g", "plausibility"]
     if labels:
-        cols += ["tp", "fp", "fn", "f1", "lag_ms"]
+        cols += ["tp", "fp", "fn", "prec", "recall", "f1", "lag_ms", "hit_acc"]
     elif args.truth:
         cols += ["count_err"]
 
@@ -276,7 +310,9 @@ def main():
 #define PUNCH_HG_START_LSB   {best['hg_start_lsb']}
 #define PUNCH_FSR_CONTACT    {best['fsr_contact']}
 #define PUNCH_WINDOW_MS      {best['window_ms']}
-#define PUNCH_REFRACT_MS     {best['refract_ms']}""".rstrip())
+#define PUNCH_REFRACT_MS     {best['refract_ms']}
+#define PUNCH_OPEN_ON_HG     {1 if best['open_on'] == 'hg' else 0}
+#define PUNCH_CONTACT_END_PCT {best['contact_end_pct']}""".rstrip())
     if best["baseline_mode"] == "always":
         print("\n/* NOTE: this fit wants baseline tracking in every state, "
               "which\n   punch_detect.c does not do — see the baseline_mode "

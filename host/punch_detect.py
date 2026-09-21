@@ -12,10 +12,11 @@ not exist. Integer widths and truncation are reproduced deliberately:
     not Python's floor
   * hg_mag() is the same sqrt-free approximation (hi + lo/2), not a real norm
 
-Anything changed here has to be changed in the C, and vice versa. The one
-deliberate addition is `baseline_mode`: the firmware implements exactly one of
-its three settings, and the other two exist so the choice can be re-scored on
-real punches rather than argued about -- see Params below.
+Anything changed here has to be changed in the C, and vice versa. The
+deliberate additions are the rule switches -- `baseline_mode`, `open_on`,
+`contact_end_pct`: the firmware implements one setting of each, and the
+others exist so the choice can be re-scored on real punches rather than
+argued about -- see Params below.
 """
 
 from dataclasses import dataclass, replace
@@ -33,9 +34,12 @@ DEFAULTS = dict(
     baseline_mode="idle_refract",
     baseline_shift=6,     # EMA divisor is 1 << shift; the C uses 64
     confirm_ms=3,         # PUNCH_CONFIRM_MS
+    open_on="hg",         # PUNCH_OPEN_ON_HG
+    contact_end_pct=50,   # PUNCH_CONTACT_END_PCT
 )
 
 BASELINE_MODES = ("idle", "idle_refract", "always")
+OPEN_MODES = ("any", "hg")
 
 
 @dataclass(frozen=True)
@@ -79,6 +83,26 @@ class Params:
     # hum-crest + spike clears fsr_contact for exactly one or two samples —
     # 1 event/s on a node lying on a table. A real contact lasts >= 5 ms.
     confirm_ms: int = DEFAULTS["confirm_ms"]
+    # What may open an event. "any": high-g over hg_start_lsb OR an FSR rise
+    # over fsr_contact (the original rule). "hg": high-g only; the FSR is
+    # read inside the event for contact, never to start one.
+    #
+    # Every session with a hand in the glove showed why: the resting preload
+    # wanders by hundreds of counts with every clench and wrist movement, so
+    # the FSR opened an event, kept it active to the window cap, and the
+    # baseline (frozen in ACTIVE) never caught up — one event every
+    # window+refract, 0.55 s, for minutes at a time, peak 2-4 g, which is a
+    # hand moving and no punch. Those are exactly the "press" events the
+    # host classifies and metrics.py throws away. A thrown punch, landed or
+    # not, always carries the high-g signature, so nothing a boxer wants
+    # counted is lost by ignoring FSR-only rises.
+    open_on: str = DEFAULTS["open_on"]
+    # Contact is over once the FSR has fallen below this share of its peak
+    # in the event (still bounded below by fsr_contact). 0 = the original
+    # rule, contact lasts while f_rel > fsr_contact, which on a glove that
+    # settles at a new preload after impact runs to the window cap
+    # (measured: 250-400 ms widths on real hits; foam contact is 20-50 ms).
+    contact_end_pct: int = DEFAULTS["contact_end_pct"]
 
     def replace(self, **kw) -> "Params":
         return replace(self, **kw)
@@ -194,19 +218,35 @@ class PunchDetector:
 
         f0_rel = f0 - self.f0_base if f0 > self.f0_base else 0
         f1_rel = f1 - self.f1_base if f1 > self.f1_base else 0
-        contact_now = f0_rel > p.fsr_contact or f1_rel > p.fsr_contact
-        active_now = mag > p.hg_start_lsb or contact_now
+        pressed = f0_rel > p.fsr_contact or f1_rel > p.fsr_contact
+        # Once contact has begun, it only counts as continuing while the FSR
+        # stays above contact_end_pct of the event's peak; the glove settling
+        # at a higher preload is not a fist still on the bag.
+        contact_now = pressed
+        if pressed and self.st == ACTIVE and self.contact and p.contact_end_pct:
+            hold = max(p.fsr_contact,
+                       max(self.f0_peak, self.f1_peak) * p.contact_end_pct // 100)
+            contact_now = f0_rel > hold or f1_rel > hold
+        swing = mag > p.hg_start_lsb
+        open_now = swing if p.open_on == "hg" else (swing or contact_now)
+        active_now = swing or contact_now
 
         out = None
 
         if self.st == IDLE:
-            if not active_now:
+            if not open_now:
                 self._run = 0
             else:
                 if self._run == 0:
                     self._run_start_us = t_us
                 self._run += 1
-            if active_now and self._run >= p.confirm_ms * (SAMPLE_HZ // 1000):
+            # confirm_ms exists for the FSR: hum and 1-2 ms spikes clear
+            # fsr_contact for a sample or two. A high-g spike has no such
+            # impostor, and on the captures a real impact is 1-2 samples wide
+            # above 5 g (45 g one sample, 2.4 g the next), so waiting for a
+            # third would drop most of them. High-g opens on its first sample.
+            need = 1 if swing else p.confirm_ms * (SAMPLE_HZ // 1000)
+            if open_now and self._run >= need:
                 self._run = 0
                 self.peak_hg = 0
                 self.f0_peak = self.f1_peak = 0
@@ -218,8 +258,11 @@ class PunchDetector:
                 # sample that confirmed it — exec_ms is measured from here
                 self.t_start_us = self._run_start_us
                 self.t_last_active_us = t_us
+                # fall through: the sample that opened the event is part of
+                # it. Skipping it lost the whole punch when the impact spike
+                # was the opener — 45 g on the capture, 10 g in the event.
 
-        elif self.st == ACTIVE:
+        if self.st == ACTIVE:
             self.peak_hg = max(self.peak_hg, mag)
             self.f0_peak = max(self.f0_peak, f0_rel)
             self.f1_peak = max(self.f1_peak, f1_rel)
@@ -229,6 +272,7 @@ class PunchDetector:
                     self.contact_start_us = t_us
                     self.t_contact_us = t_us
                 self.contact_end_us = t_us
+            if pressed:
                 self.impulse += (f0_rel + f1_rel) // (SAMPLE_HZ // 1000)
             if active_now:
                 self.t_last_active_us = t_us
@@ -283,11 +327,14 @@ if __name__ == "__main__":
         description="Replay a raw capture through the detector and list events")
     ap.add_argument("capture", type=Path)
     for name in ("hg_start_lsb", "fsr_contact", "window_ms", "refract_ms",
-                 "quiet_ms", "baseline_shift"):
+                 "quiet_ms", "baseline_shift", "confirm_ms",
+                 "contact_end_pct"):
         ap.add_argument(f"--{name.replace('_', '-')}", type=int,
                         default=DEFAULTS[name])
     ap.add_argument("--baseline-mode", choices=BASELINE_MODES,
                     default=DEFAULTS["baseline_mode"])
+    ap.add_argument("--open-on", choices=OPEN_MODES,
+                    default=DEFAULTS["open_on"])
     args = ap.parse_args()
 
     prm = Params(**{k: v for k, v in vars(args).items() if k != "capture"})
