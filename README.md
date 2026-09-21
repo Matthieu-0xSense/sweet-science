@@ -116,7 +116,8 @@ host/
   punch_detect.py   port of punch_detect.c, thresholds exposed
   sweep.py          fit the thresholds offline against a capture
   mark.py           hand-label punches while recording
-web/                debug panel — pure front end, no build step (uPlot vendored)
+web/                debug panel (index.html) and boxer view (boxer.html) — pure
+                    front end, no build step (uPlot vendored)
 firmware/           Zephyr app for the Feather nRF52840 Sense nodes
 logs/               created at runtime, not tracked
 ```
@@ -172,6 +173,25 @@ What a wrist IMU can and cannot give, and what the view does about it:
 Verified against an analytic swing (0.9 g for 150 ms, then brake): 0.199 m
 computed vs 0.199 m expected, 0.205 m on a 45° tilted mount. Not yet checked
 against a real punch — no session on disk contains one.
+
+### Boxer view
+
+`web/boxer.html` is the same data for the person wearing the gloves: nothing
+about sensors, large enough to read from across the room. A round timer with
+bells (rounds × work / rest; punches thrown at rest are not scored), punch
+count, pace per minute and over the last 10 s, longest pause, the last punch
+and whether it was the best of the session, per-hand count / average / max
+power / landed share, left-right balance, the combination in flight (punches
+under 0.7 s apart), a timeline with one stick per punch under a 30 s average
+power line, and a per-round table that marks pace or power more than 15 %
+under round 1. Power is the harder reading of the two accelerometers, in g,
+until the force calibration exists. **Swap L/R** relabels the hands when the
+nodes went on the wrong wrists; **load session** scores a past `.jsonl` in
+one pass instead of replaying it.
+
+"Landed" is only as good as the FSR contact flag, and in shadow boxing a
+clenched fist sets it: the 21/09 air-only session scored 84 % landed on one
+hand. Trust it on a bag, not in the air, until contact is refitted.
 
 ## Threshold fitting
 

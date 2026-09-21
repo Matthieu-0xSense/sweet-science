@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Boxe AI — Boxer</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="boxer.css">
+</head>
+<body>
+<header>
+  <h1>🥊 Boxe AI</h1>
+  <div id="conn-bar">
+    <input type="text" id="ws-url" value="ws://127.0.0.1:8765">
+    <button id="btn-connect">Connect</button>
+    <span class="node-badge" id="badge-host">host</span>
+    <span class="node-badge" id="badge-L">L</span>
+    <span class="node-badge" id="badge-R">R</span>
+    <label class="replay-label">load session:
+      <input type="file" id="load-file" accept=".jsonl">
+    </label>
+    <button id="btn-swap" title="Nodes strapped on the wrong hands: swap L and R here instead of re-strapping">Swap L/R</button>
+    <button id="btn-reset" title="Forget every punch and round of this session">New session</button>
+    <a href="index.html">debug panel</a>
+  </div>
+</header>
+
+<main id="boxer">
+  <section class="row" id="row-top">
+    <div class="tile" id="timer-tile">
+      <div class="tile-h"><span id="timer-state">free session</span><span id="timer-round"></span></div>
+      <div id="timer-clock">0:00</div>
+      <div class="controls">
+        <button id="btn-start">Start rounds</button>
+        <button id="btn-stop">Stop</button>
+        <label><input type="number" id="cfg-rounds" value="3" min="1" max="15"> ×</label>
+        <label><input type="number" id="cfg-work" value="180" min="10" step="10"> s work</label>
+        <label><input type="number" id="cfg-rest" value="60" min="0" step="10"> s rest</label>
+      </div>
+    </div>
+
+    <div class="tile big"><div class="tile-h">punches</div>
+      <div class="num" id="n-total">0</div>
+      <div class="sub"><span id="n-round-label">this round</span> <b id="n-round">0</b></div></div>
+
+    <div class="tile big"><div class="tile-h">pace — punches / min</div>
+      <div class="num" id="n-pace">0</div>
+      <div class="sub">last 10 s <b id="n-pace10">0</b> · longest pause <b id="n-pause">0</b> s</div></div>
+
+    <div class="tile big" id="last-tile"><div class="tile-h">last punch</div>
+      <div class="num"><span id="last-hand">–</span> <span id="last-g">–</span><small> g</small></div>
+      <div class="sub" id="last-note">&nbsp;</div></div>
+  </section>
+
+  <section class="row" id="row-hands">
+    <div class="tile hand hand-L"><div class="tile-h">LEFT</div>
+      <div class="hand-grid">
+        <div><div class="num" id="L-n">0</div><div class="sub">punches</div></div>
+        <div><div class="num" id="L-avg">–</div><div class="sub">avg g</div></div>
+        <div><div class="num" id="L-max">–</div><div class="sub">max g</div></div>
+        <div><div class="num" id="L-land">–</div><div class="sub">landed</div></div>
+      </div></div>
+
+    <div class="tile" id="mid-tile">
+      <div class="tile-h">left / right balance</div>
+      <div id="balance"><div id="balance-L"></div><div id="balance-R"></div></div>
+      <div class="sub" id="balance-txt">–</div>
+      <div class="tile-h" style="margin-top:10px">combo</div>
+      <div id="combo-chips"></div>
+      <div class="sub">combos <b id="c-n">0</b> · longest <b id="c-max">0</b> · avg length <b id="c-avg">–</b></div>
+    </div>
+
+    <div class="tile hand hand-R"><div class="tile-h">RIGHT</div>
+      <div class="hand-grid">
+        <div><div class="num" id="R-n">0</div><div class="sub">punches</div></div>
+        <div><div class="num" id="R-avg">–</div><div class="sub">avg g</div></div>
+        <div><div class="num" id="R-max">–</div><div class="sub">max g</div></div>
+        <div><div class="num" id="R-land">–</div><div class="sub">landed</div></div>
+      </div></div>
+  </section>
+
+  <section class="row" id="row-bottom">
+    <div class="tile" id="timeline-tile">
+      <div class="tile-h">every punch — height is power (g), line is the 30 s average
+        <span class="hint" id="fatigue-txt"></span></div>
+      <canvas id="timeline"></canvas>
+    </div>
+    <div class="tile" id="rounds-tile">
+      <div class="tile-h">rounds</div>
+      <table id="rounds-table">
+        <thead><tr><th></th><th>n</th><th>L / R</th><th>/min</th><th>avg g</th><th>max g</th><th>landed</th><th>combo</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="boxer.js"></script>
+</body>
+</html>
