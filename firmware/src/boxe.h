@@ -21,6 +21,13 @@
 #define PUNCH_FSR_CONTACT    150    /* ADC counts above baseline */
 #define PUNCH_WINDOW_MS      400
 #define PUNCH_REFRACT_MS     150
+#define PUNCH_QUIET_MS       100    /* event ends after this long under every
+				     * threshold. Was 30: a punch is a drive, a dip
+				     * and a harder stop at extension 50-90 ms on,
+				     * so 30 ms closed the event in the dip and the
+				     * stop fell in the refractory or became a second
+				     * event — 13 of 25 events held the punch's real
+				     * peak; at 100 ms, 23 of 23 */
 #define PUNCH_CONFIRM_MS     3      /* sustained FSR contact needed to open an event */
 #define PUNCH_OPEN_ON_HG     1      /* 1: only high-g opens an event; the FSR is
 				     * read inside it for contact. 0: FSR contact

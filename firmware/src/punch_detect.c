@@ -3,7 +3,7 @@
  *
  * States: IDLE -> ACTIVE (ADXL375 or LSM6 magnitude above its start
  * threshold; with PUNCH_OPEN_ON_HG=0 also on FSR contact) -> collect peaks/impulse until
- * quiet for 30 ms or PUNCH_WINDOW_MS is up -> emit event -> REFRACTORY.
+ * quiet for PUNCH_QUIET_MS or PUNCH_WINDOW_MS is up -> emit event -> REFRACTORY.
  *
  * All thresholds in boxe.h — fitted offline with host/sweep.py, which
  * replays host/punch_detect.py, a line-by-line port of this file. Change
@@ -227,7 +227,7 @@ void punch_detect_feed(uint32_t t_us, uint16_t f0, uint16_t f1,
 		}
 		if (active_now) d.t_last_active_us = t_us;
 
-		if ((t_us - d.t_last_active_us) > 30 * 1000 ||
+		if ((t_us - d.t_last_active_us) > PUNCH_QUIET_MS * 1000 ||
 		    (t_us - d.t_start_us) > PUNCH_WINDOW_MS * 1000) {
 			/* quiet or window over -> emit */
 			pending.t_us = d.contact ? d.t_contact_us
