@@ -19,6 +19,7 @@ others exist so the choice can be re-scored on real punches rather than
 argued about -- see Params below.
 """
 
+import math
 from dataclasses import dataclass, replace
 from typing import Iterator, List, Optional
 
@@ -27,6 +28,7 @@ SAMPLE_HZ = 1000
 # Defaults are the current firmware values, firmware/src/boxe.h.
 DEFAULTS = dict(
     hg_start_lsb=102,     # PUNCH_HG_START_LSB, ~5 g at 49 mg/LSB
+    lg_start_mg=3000,     # PUNCH_LG_START_MG, LSM6 |a|; 0 = off
     fsr_contact=150,      # PUNCH_FSR_CONTACT, counts above baseline
     window_ms=400,        # PUNCH_WINDOW_MS
     refract_ms=150,       # PUNCH_REFRACT_MS
@@ -71,6 +73,12 @@ class Params:
     rather than in an argument.
     """
     hg_start_lsb: int = DEFAULTS["hg_start_lsb"]
+    # The LSM6 opens an event too. Unloaded punches peak at 4-9 g on the
+    # wrist, which is the ADXL375's threshold plus its offset and noise; the
+    # low-g part sees them at 4-14 g over a 1.0 g floor. Only takes effect
+    # when the replay feeds low-g through set_lowg() — a raw capture carries
+    # none, so replaying one scores the high-g path alone.
+    lg_start_mg: int = DEFAULTS["lg_start_mg"]
     fsr_contact: int = DEFAULTS["fsr_contact"]
     window_ms: int = DEFAULTS["window_ms"]
     refract_ms: int = DEFAULTS["refract_ms"]
@@ -125,6 +133,8 @@ class Event:
     seq: int
     t_start_us: int
     retract_ms10: int
+    swing: bool = False
+    peak_lg10: int = 0
 
     @property
     def peak_g(self) -> float:
@@ -186,6 +196,13 @@ class PunchDetector:
         self._primed = False
         self._run = 0            # consecutive active samples while IDLE
         self._run_start_us = 0
+        self.lg_sq = 0           # latest low-g |a|^2, mg^2
+        self.peak_lg_sq = 0
+        self.swing = False
+
+    def set_lowg(self, ax_mg: int, ay_mg: int, az_mg: int) -> None:
+        """punch_detect_lowg(): latest LSM6 sample, held until the next."""
+        self.lg_sq = ax_mg * ax_mg + ay_mg * ay_mg + az_mg * az_mg
 
     def feed(self, t_us: int, f0: int, f1: int,
              hgx: int, hgy: int, hgz: int) -> Optional[Event]:
@@ -227,7 +244,9 @@ class PunchDetector:
             hold = max(p.fsr_contact,
                        max(self.f0_peak, self.f1_peak) * p.contact_end_pct // 100)
             contact_now = f0_rel > hold or f1_rel > hold
-        swing = mag > p.hg_start_lsb
+        swing = (mag > p.hg_start_lsb or
+                 (p.lg_start_mg > 0 and
+                  self.lg_sq > p.lg_start_mg * p.lg_start_mg))
         open_now = swing if p.open_on == "hg" else (swing or contact_now)
         active_now = swing or contact_now
 
@@ -253,6 +272,8 @@ class PunchDetector:
                 self.impulse = 0
                 self.contact = False
                 self.contact_start_us = self.contact_end_us = 0
+                self.peak_lg_sq = 0
+                self.swing = False
                 self.st = ACTIVE
                 # onset is the first sample of the confirmed run, not the
                 # sample that confirmed it — exec_ms is measured from here
@@ -264,6 +285,9 @@ class PunchDetector:
 
         if self.st == ACTIVE:
             self.peak_hg = max(self.peak_hg, mag)
+            self.peak_lg_sq = max(self.peak_lg_sq, self.lg_sq)
+            if swing:
+                self.swing = True
             self.f0_peak = max(self.f0_peak, f0_rel)
             self.f1_peak = max(self.f1_peak, f1_rel)
             if contact_now:
@@ -295,6 +319,8 @@ class PunchDetector:
                     t_start_us=self.t_start_us,
                     retract_ms10=(u32_sub(t_us, self.contact_end_us) // 100
                                   if self.contact else 0),
+                    swing=self.swing,
+                    peak_lg10=min(math.isqrt(self.peak_lg_sq) // 100, 255),
                 )
                 self.st = REFRACT
                 self.t_last_active_us = t_us
@@ -326,7 +352,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(
         description="Replay a raw capture through the detector and list events")
     ap.add_argument("capture", type=Path)
-    for name in ("hg_start_lsb", "fsr_contact", "window_ms", "refract_ms",
+    for name in ("hg_start_lsb", "lg_start_mg", "fsr_contact", "window_ms", "refract_ms",
                  "quiet_ms", "baseline_shift", "confirm_ms",
                  "contact_end_pct"):
         ap.add_argument(f"--{name.replace('_', '-')}", type=int,

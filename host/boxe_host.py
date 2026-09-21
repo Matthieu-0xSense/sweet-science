@@ -60,11 +60,15 @@ ADXL375_G_PER_LSB = 0.049  # 49 mg/LSB
 # is the same level the firmware uses to open an event on motion
 # (PUNCH_HG_START_LSB); a real punch peaks at 20-90 g, a glove going on at
 # 1-3 g. Refit against labelled sessions with the rest of the thresholds.
+#
+# Firmware that also opens events on the LSM6 sets flags bit2 when either
+# accelerometer crossed its start threshold: an unloaded punch can be a swing
+# at 4 g on the ADXL375. The peak rule stays for nodes that predate the flag.
 PUNCH_SWING_G = 5.0
 
 
-def classify_event(contact: bool, peak_g: float) -> str:
-    swing = peak_g >= PUNCH_SWING_G
+def classify_event(contact: bool, peak_g: float, swing_flag: bool = False) -> str:
+    swing = swing_flag or peak_g >= PUNCH_SWING_G
     if contact and swing:
         return "punch"
     if swing:
@@ -240,18 +244,20 @@ def force_n(f0: int, f1: int):
 
 
 def parse_event(data: bytes, node: str):
-    t_us, flags, _, peak_hg, f0, f1, width, impulse, seq, t_start_us, retract = \
+    t_us, flags, peak_lg10, peak_hg, f0, f1, width, impulse, seq, t_start_us, retract = \
         struct.unpack("<IBBHHHHIIIH", data)
     return {
         "node": node, "type": "event", "t_us": t_us,
         "contact": bool(flags & 1), "sat": bool(flags & 2),
         "peak_g": round(peak_hg * ADXL375_G_PER_LSB, 1),
+        "peak_lg_g": peak_lg10 / 10,
         "f0": f0, "f1": f1, "width_ms": width / 10,
         "impulse": impulse, "seq": seq,
         "exec_ms": round((t_us - t_start_us) / 1000, 1),
         "retract_ms": retract / 10,
         "force_n": force_n(f0, f1),
-        "kind": classify_event(bool(flags & 1), peak_hg * ADXL375_G_PER_LSB),
+        "kind": classify_event(bool(flags & 1), peak_hg * ADXL375_G_PER_LSB,
+                               bool(flags & 4)),
     }
 
 

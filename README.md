@@ -411,6 +411,15 @@ pyocd gdbserver -t nrf52840    # step debug
   samples beyond +/-4096 LSB are dropped; the `hg` shell command prints that
   drop count with the most FIFO entries ever found waiting and the overrun
   count — near 32 means the loop ran late and entries were lost.
+- **The LSM6 opens events too** (`PUNCH_LG_START_MG`, |a| > 3 g). Shadow
+  boxing peaks at 4-9 g on the wrist: that is the ADXL375's 5 g threshold,
+  and the part cannot go lower without a still arm opening events on its
+  offset and noise. Replayed over the 21/09 sessions the ADXL375 alone
+  caught 19 of 28 unloaded punches on one node, both accelerometers 28 of
+  28, with no extra event in guard. Events carry the LSM6 peak
+  (`peak_lg_g`) and a swing flag, which the host uses for `kind` instead of
+  the ADXL375 peak. The LSM6 is read at 100 Hz, so a low-g open — and the
+  `exec_ms` measured from it — can be 10 ms late.
 - `lsm6ds33.c` accepts WHO_AM_I 0x69 (LSM6DS33) and 0x6A (LSM6DS3TR-C, fitted
   on later Feather Sense revisions) — same register map and sensitivities.
 - `dfu` shell command reboots into the UF2 bootloader (GPREGRET magic 0x57),

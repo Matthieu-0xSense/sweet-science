@@ -159,6 +159,7 @@ static void sample_fn(struct k_work *work)
 		int16_t a[3] = {0}, g[3] = {0};
 
 		(void)lsm6ds33_read(a, g);
+		punch_detect_lowg(a);
 
 		if (stream_fill == 0) {
 			stream_pkt.t_us_base = t_us;

@@ -43,7 +43,9 @@ input.
 ```
 u32  t_us         contact instant (FSR rise) or hg peak if no contact
 u8   flags        bit0: contact (FSR fired)  bit1: saturated hg
-u8   _pad
+                  bit2: swing — ADXL375 or LSM6 crossed its start threshold
+u8   peak_lg10    LSM6 |a| peak in the event, g ×10 (from 100 Hz samples;
+                  0 on firmware that predates it — this byte was padding)
 u16  peak_hg      ADXL375 peak, raw LSB
 u16  f0_peak      FSR ch0 peak, ADC counts (0..4095)
 u16  f1_peak      FSR ch1 peak
@@ -123,9 +125,12 @@ Units on the wire to the panel: `ax..az` mg, `gx..gz` dps, `hg` g (float,
 already scaled by host), `peak_g` g, `force_n` null until the calibration
 regression exists.
 
+`peak_lg_g` (LSM6 peak, g) sits next to `peak_g` on events from firmware that
+reports it.
+
 `kind` is the host's reading of the two flags together, so the panel and
 `metrics.py` agree on what an event was: `punch` = contact and a swing
-(`peak_g` >= 5 g), `miss` = swing without contact, `press` = contact without a
+(flags bit2, or `peak_g` >= 5 g on firmware without it), `miss` = swing without contact, `press` = contact without a
 swing (glove going on, pad squeezed), `other` = neither. Only `punch` and
 `miss` count as thrown punches. The node does not classify: an event opens on
 either sensor and carries both flags, so the split can be refitted offline.

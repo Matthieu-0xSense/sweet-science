@@ -1,8 +1,8 @@
 /*
  * Punch detection state machine. Fed at SAMPLE_HZ, pops event packets.
  *
- * States: IDLE -> ACTIVE (hg magnitude above start threshold; with
- * PUNCH_OPEN_ON_HG=0 also on FSR contact) -> collect peaks/impulse until
+ * States: IDLE -> ACTIVE (ADXL375 or LSM6 magnitude above its start
+ * threshold; with PUNCH_OPEN_ON_HG=0 also on FSR contact) -> collect peaks/impulse until
  * quiet for 30 ms or PUNCH_WINDOW_MS is up -> emit event -> REFRACTORY.
  *
  * All thresholds in boxe.h — fitted offline with host/sweep.py, which
@@ -32,6 +32,9 @@ static struct {
 	bool primed;                 /* baseline seeded from the first sample */
 	uint16_t run;                /* consecutive active samples while IDLE */
 	uint32_t run_start_us;
+	uint32_t lg_sq;              /* latest low-g |a|^2, mg^2 */
+	uint32_t peak_lg_sq;
+	bool swing;                  /* an accel crossed its start threshold */
 } d;
 
 static struct event_packet pending;
@@ -45,6 +48,36 @@ uint16_t punch_hg_mag(int16_t x, int16_t y, int16_t z)
 	uint16_t hi = MAX(ax, MAX(ay, az));
 	uint16_t lo = MIN(ax, MIN(ay, az));
 	return hi + lo / 2;
+}
+
+/*
+ * Squared magnitude, no sqrt and no approximation: +/-16 g is 16000 mg per
+ * axis, so the sum tops out at 7.7e8 and fits 32 bits.
+ */
+void punch_detect_lowg(const int16_t a_mg[3])
+{
+	d.lg_sq = (uint32_t)((int32_t)a_mg[0] * a_mg[0]) +
+		  (uint32_t)((int32_t)a_mg[1] * a_mg[1]) +
+		  (uint32_t)((int32_t)a_mg[2] * a_mg[2]);
+}
+
+static uint32_t isqrt32(uint32_t v)
+{
+	uint32_t r = 0, bit = 1UL << 30;
+
+	while (bit > v) {
+		bit >>= 2;
+	}
+	while (bit) {
+		if (v >= r + bit) {
+			v -= r + bit;
+			r = (r >> 1) + bit;
+		} else {
+			r >>= 1;
+		}
+		bit >>= 2;
+	}
+	return r;
 }
 
 void punch_detect_feed(uint32_t t_us, uint16_t f0, uint16_t f1,
@@ -103,9 +136,21 @@ void punch_detect_feed(uint32_t t_us, uint16_t f0, uint16_t f1,
 		if (hold < PUNCH_FSR_CONTACT) hold = PUNCH_FSR_CONTACT;
 		contact_now = (f0_rel > hold) || (f1_rel > hold);
 	}
-	bool swing = mag > PUNCH_HG_START_LSB;
 	/*
-	 * Only high-g opens an event. Every session with a hand in the glove
+	 * Either accelerometer counts as a swing. The ADXL375 alone missed
+	 * unloaded punches: shadow boxing peaks at 4-9 g on the wrist, the
+	 * part carries 1-2 g of offset and noise, and 5 g is as low as its
+	 * threshold goes before a still arm opens events. The LSM6 sees the
+	 * same punches at 4-14 g against a 1.0 g floor; at 3 g it opened on
+	 * every swing of the 21/09 sessions and on nothing in guard. It is
+	 * sampled at 100 Hz, so a low-g open can be up to 10 ms late — the
+	 * ADXL375 still gets there first on anything that hits.
+	 */
+	bool swing = mag > PUNCH_HG_START_LSB ||
+		     (PUNCH_LG_START_MG &&
+		      d.lg_sq > (uint32_t)PUNCH_LG_START_MG * PUNCH_LG_START_MG);
+	/*
+	 * Only an accelerometer opens an event. Every session with a hand in the glove
 	 * showed why the FSR must not: the resting preload wanders by hundreds
 	 * of counts with each clench and wrist movement, so the FSR opened an
 	 * event, held it active to the window cap, and the baseline (frozen in
@@ -151,6 +196,8 @@ void punch_detect_feed(uint32_t t_us, uint16_t f0, uint16_t f1,
 		d.impulse = 0;
 		d.contact = false;
 		d.contact_start_us = d.contact_end_us = 0;
+		d.peak_lg_sq = 0;
+		d.swing = false;
 		d.st = ACTIVE;
 		/* onset = first sample of the confirmed run, so exec_ms
 		 * is not shortened by the confirmation delay */
@@ -163,6 +210,8 @@ void punch_detect_feed(uint32_t t_us, uint16_t f0, uint16_t f1,
 
 	case ACTIVE:
 		if (mag > d.peak_hg) d.peak_hg = mag;
+		if (d.lg_sq > d.peak_lg_sq) d.peak_lg_sq = d.lg_sq;
+		if (swing) d.swing = true;
 		if (f0_rel > d.f0_peak) d.f0_peak = f0_rel;
 		if (f1_rel > d.f1_peak) d.f1_peak = f1_rel;
 		if (contact_now) {
@@ -184,7 +233,10 @@ void punch_detect_feed(uint32_t t_us, uint16_t f0, uint16_t f1,
 			pending.t_us = d.contact ? d.t_contact_us
 						 : d.t_start_us;
 			pending.flags = (d.contact ? 1 : 0) |
-					(d.peak_hg >= 4000 ? 2 : 0);
+					(d.peak_hg >= 4000 ? 2 : 0) |
+					(d.swing ? 4 : 0);
+			/* mg -> g x10; 16 g full scale reads 160, fits u8 */
+			pending.peak_lg10 = (uint8_t)MIN(isqrt32(d.peak_lg_sq) / 100, 255);
 			pending.peak_hg = d.peak_hg;
 			pending.f0_peak = d.f0_peak;
 			pending.f1_peak = d.f1_peak;

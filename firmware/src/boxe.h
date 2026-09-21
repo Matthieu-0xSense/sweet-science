@@ -13,6 +13,11 @@
 
 /* punch detection thresholds — tune during calibration */
 #define PUNCH_HG_START_LSB   102    /* ~5 g on ADXL375 (49 mg/LSB) */
+#define PUNCH_LG_START_MG    3000   /* LSM6 |a| that also opens an event; 0 = off.
+				     * An unloaded punch peaks at 4-9 g on the
+				     * wrist, right on the ADXL375 threshold and
+				     * inside its offset + noise; the low-g part
+				     * resolves that range cleanly */
 #define PUNCH_FSR_CONTACT    150    /* ADC counts above baseline */
 #define PUNCH_WINDOW_MS      400
 #define PUNCH_REFRACT_MS     150
@@ -41,8 +46,10 @@ struct __packed imu_packet {
 
 struct __packed event_packet {
 	uint32_t t_us;
-	uint8_t  flags;             /* bit0 contact, bit1 hg saturated */
-	uint8_t  _pad;
+	uint8_t  flags;             /* bit0 contact, bit1 hg saturated,
+				     * bit2 swing (either accel over its start
+				     * threshold during the event) */
+	uint8_t  peak_lg10;         /* LSM6 |a| peak, g x10 (100 Hz samples) */
 	uint16_t peak_hg;           /* raw LSB */
 	uint16_t f0_peak;           /* ADC counts */
 	uint16_t f1_peak;
@@ -121,6 +128,9 @@ int power_button_init(void);
 uint16_t punch_hg_mag(int16_t x, int16_t y, int16_t z);
 void punch_detect_feed(uint32_t t_us, uint16_t f0, uint16_t f1,
 		       int16_t hgx, int16_t hgy, int16_t hgz);
+/* latest low-g sample, mg; held until the next one (the LSM6 is read at
+ * SAMPLE_HZ / IMU_DECIM) */
+void punch_detect_lowg(const int16_t a_mg[3]);
 bool punch_detect_pop(struct event_packet *out);
 
 /* ble_service.c */
