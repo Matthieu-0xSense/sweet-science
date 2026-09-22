@@ -189,9 +189,14 @@ until the force calibration exists. **Swap L/R** relabels the hands when the
 nodes went on the wrong wrists; **load session** scores a past `.jsonl` in
 one pass instead of replaying it.
 
-"Landed" is only as good as the FSR contact flag, and in shadow boxing a
-clenched fist sets it: the 21/09 air-only session scored 84 % landed on one
-hand. Trust it on a bag, not in the air, until contact is refitted.
+"Landed" is the FSR contact flag, so it is only as good as where the sensor
+sits in the glove. With the 21/09 placement a fist clenching at full
+extension pressed it: an air-only session scored 84 % landed on one hand,
+and nothing in the event tells that press from a hit (peak 176-1719 counts,
+width 1-400 ms, rise 10-330 ms — all inside the range of real contacts). A
+software gate on the impact spike (>= 20 g) was tried and dropped: it hides
+light touches and would mask whether a better placement works. Fix is
+mechanical; the check is an air-only session reading ~0 % landed.
 
 ## Threshold fitting
 
